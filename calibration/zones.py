@@ -12,21 +12,23 @@ from ui.calibration_views import (
     contours_from_mask
 )
 
+from persistence.experiment_config import (
+    zone_mask_path
+)
+
 
 def sanitize_name(name):
-
-    text = name.strip().lower()
+    text = str(
+        name
+    ).strip().lower()
 
     result = []
 
     for char in text:
-
         if (
             char.isalnum()
-            or
-            char == "_"
+            or char == "_"
         ):
-
             result.append(
                 char
             )
@@ -35,7 +37,6 @@ def sanitize_name(name):
             " ",
             "-"
         ):
-
             result.append(
                 "_"
             )
@@ -45,7 +46,6 @@ def sanitize_name(name):
     )
 
     while "__" in text:
-
         text = text.replace(
             "__",
             "_"
@@ -60,55 +60,57 @@ def mask_from_pts(
     shape_hw,
     points
 ):
-
     mask = np.zeros(
         shape_hw,
         dtype=np.uint8
     )
+
+    if points is None:
+        return mask
 
     points_np = np.array(
         points,
         dtype=np.int32
     )
 
-    cv2.fillPoly(
-        mask,
-        [points_np],
-        255
-    )
+    if len(points_np) >= 3:
+        cv2.fillPoly(
+            mask,
+            [
+                points_np
+            ],
+            255
+        )
 
     return mask
 
 
 def mask_from_contours(
     shape_hw,
-    contours
+    contours_pts
 ):
-
     mask = np.zeros(
         shape_hw,
         dtype=np.uint8
     )
 
-    if not contours:
+    if contours_pts is None:
         return mask
 
     polygons = []
 
-    for contour in contours:
-
-        arr = np.array(
+    for contour in contours_pts:
+        array = np.array(
             contour,
             dtype=np.int32
         )
 
-        if len(arr) >= 3:
+        if len(array) >= 3:
             polygons.append(
-                arr
+                array
             )
 
     if polygons:
-
         cv2.fillPoly(
             mask,
             polygons,
@@ -119,6 +121,8 @@ def mask_from_contours(
 
 
 def centroid_from_mask(mask):
+    if mask is None:
+        return None
 
     moments = cv2.moments(
         mask
@@ -148,32 +152,33 @@ def point_in_mask(
     x,
     y
 ):
+    if mask is None:
+        return 0
 
-    h, w = mask.shape[:2]
+    height, width = mask.shape[:2]
 
-    x = int(
+    xi = int(
         round(x)
     )
 
-    y = int(
+    yi = int(
         round(y)
     )
 
     if (
-        x < 0
-        or
-        x >= w
-        or
-        y < 0
-        or
-        y >= h
+        xi < 0
+        or xi >= width
+        or yi < 0
+        or yi >= height
     ):
-
         return 0
 
     return (
         1
-        if mask[y, x] > 0
+        if mask[
+            yi,
+            xi
+        ] > 0
         else 0
     )
 
@@ -181,94 +186,100 @@ def point_in_mask(
 def select_zones(
     image_bgr,
     roi_mask_full=None,
-    mutually_exclusive=True
+    mutually_exclusive=True,
+    exp_name=None
 ):
-
     zones = []
 
-    H, W = image_bgr.shape[:2]
+    height, width = image_bgr.shape[:2]
 
     if roi_mask_full is not None:
-
         available_mask = (
             roi_mask_full.copy()
         )
 
     else:
-
-        available_mask = np.ones(
-            (H, W),
-            dtype=np.uint8
-        ) * 255
+        available_mask = (
+            np.ones(
+                (
+                    height,
+                    width
+                ),
+                dtype=np.uint8
+            )
+            * 255
+        )
 
     while True:
-
-        add_zone = ask_yes_no(
+        add_more = ask_yes_no(
             "¿Agregar una zona interna?",
             default_yes=False
         )
 
-        if not add_zone:
+        if not add_more:
             break
 
-        name = gui_ask_string(
+        default_name = (
+            f"zona_{len(zones) + 1}"
+        )
+
+        zone_name = gui_ask_string(
             "Nombre de zona",
             "Nombre de la zona:",
-            default=f"zona_{len(zones) + 1}"
+            default=default_name
         )
 
-        if not name:
+        if zone_name is None:
+            zone_name = ""
 
-            name = (
-                f"zona_{len(zones) + 1}"
-            )
+        if zone_name == "":
+            zone_name = default_name
 
-        name = sanitize_name(
-            name
+        zone_name = sanitize_name(
+            zone_name
         )
+
+        if zone_name == "":
+            zone_name = default_name
 
         if mutually_exclusive:
-
-            mask, points, contours = (
-                select_polygon_mask_exclusive(
-                    image_bgr,
-                    f"ZONA EXCLUYENTE: {name}",
-                    available_mask
-                )
+            (
+                zone_mask,
+                raw_points,
+                zone_contours
+            ) = select_polygon_mask_exclusive(
+                image_bgr,
+                f"ZONA EXCLUYENTE: {zone_name}",
+                available_mask_full=available_mask
             )
 
         else:
-
-            mask, points = (
-                select_polygon_mask(
-                    image_bgr,
-                    f"ZONA: {name}"
-                )
+            (
+                zone_mask,
+                raw_points
+            ) = select_polygon_mask(
+                image_bgr,
+                f"ZONA: {zone_name}"
             )
 
-            if mask is not None:
-
+            if zone_mask is not None:
                 if roi_mask_full is not None:
-
-                    mask = cv2.bitwise_and(
-                        mask,
+                    zone_mask = cv2.bitwise_and(
+                        zone_mask,
                         roi_mask_full
                     )
 
-                contours = contours_from_mask(
-                    mask
+                zone_contours = contours_from_mask(
+                    zone_mask
                 )
 
             else:
-
-                contours = None
+                zone_contours = None
 
         if (
-            mask is None
-            or
-            contours is None
+            zone_mask is None
+            or zone_contours is None
         ):
-
             print(
                 "Zona cancelada o inválida."
             )
@@ -276,72 +287,93 @@ def select_zones(
             continue
 
         if roi_mask_full is not None:
-
-            mask = cv2.bitwise_and(
-                mask,
+            zone_mask = cv2.bitwise_and(
+                zone_mask,
                 roi_mask_full
             )
 
-        area = int(
+        area_final = int(
             cv2.countNonZero(
-                mask
+                zone_mask
             )
         )
 
-        if area <= 0:
-
+        if area_final <= 0:
             print(
-                "La zona quedó vacía."
+                "La zona final quedó vacía."
             )
 
             continue
 
         centroid = centroid_from_mask(
-            mask
+            zone_mask
         )
 
-        zone = {
+        raw_points_list = []
 
+        if raw_points is not None:
+            raw_points_array = np.array(
+                raw_points
+            ).reshape(
+                -1,
+                2
+            )
+
+            raw_points_list = [
+                (
+                    int(x),
+                    int(y)
+                )
+                for x, y
+                in raw_points_array
+            ]
+
+        zone_record = {
             "name":
-                name,
+                zone_name,
 
             "contours_full":
-                contours,
+                zone_contours,
 
             "mask_full":
-                mask.copy(),
+                zone_mask.copy(),
 
             "centroid_full":
                 centroid,
 
             "raw_pts_full":
-                [
-                    (
-                        int(x),
-                        int(y)
-                    )
-                    for x, y
-                    in points.tolist()
-                ]
-                if points is not None
-                else []
+                raw_points_list
         }
 
+        if exp_name is not None:
+            mask_file = zone_mask_path(
+                exp_name,
+                zone_name
+            )
+
+            if cv2.imwrite(
+                mask_file,
+                zone_mask
+            ):
+                zone_record[
+                    "mask_file"
+                ] = mask_file
+
         zones.append(
-            zone
+            zone_record
         )
 
         if mutually_exclusive:
-
             available_mask = cv2.bitwise_and(
                 available_mask,
                 cv2.bitwise_not(
-                    mask
+                    zone_mask
                 )
             )
 
         print(
-            f"Zona agregada: {name}"
+            f"Zona agregada: {zone_name} | "
+            f"área final: {area_final} px"
         )
 
     return zones
@@ -354,14 +386,17 @@ def zones_to_crop(
     w0,
     h0
 ):
-
     result = []
 
     for zone in zones:
-
-        mask_crop = zone[
+        mask_full = zone.get(
             "mask_full"
-        ][
+        )
+
+        if mask_full is None:
+            continue
+
+        mask_crop = mask_full[
             y0:y0 + h0,
             x0:x0 + w0
         ].copy()
@@ -372,26 +407,23 @@ def zones_to_crop(
 
         centroid_crop = None
 
-        if zone.get(
+        centroid_full = zone.get(
             "centroid_full"
-        ) is not None:
+        )
 
+        if centroid_full is not None:
             centroid_crop = (
-
-                zone[
-                    "centroid_full"
-                ][0] - x0,
-
-                zone[
-                    "centroid_full"
-                ][1] - y0
+                centroid_full[0] - x0,
+                centroid_full[1] - y0
             )
 
         result.append(
             {
-
                 "name":
-                    zone["name"],
+                    zone.get(
+                        "name",
+                        ""
+                    ),
 
                 "mask_crop":
                     mask_crop,
