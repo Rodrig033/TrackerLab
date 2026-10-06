@@ -1,7 +1,7 @@
 import cv2
 
 from ui.calibration_views import (
-    make_zoom_view,
+    _make_zoom_view,
     FRAMESEL_WIN_W,
     FRAMESEL_WIN_H
 )
@@ -9,10 +9,9 @@ from ui.calibration_views import (
 
 def select_scale_line(
     image_bgr,
-    title="ESCALA (2 puntos)"
+    title="ESCALA REAL (elige 2 puntos)"
 ):
-
-    H, W = image_bgr.shape[:2]
+    height, width = image_bgr.shape[:2]
 
     window = title
 
@@ -30,42 +29,52 @@ def select_scale_line(
     points = []
 
     zoom = 1.0
-
     pan_x = 0
     pan_y = 0
 
-    view = {
-        "scale": 1,
+    redraw = True
+    done = False
+    cancel = False
+
+    view_state = {
+        "scale": 1.0,
         "pan_x": 0,
         "pan_y": 0
     }
 
-    def redraw():
-
+    def redraw_image():
         nonlocal pan_x
         nonlocal pan_y
 
-        display, scale, px, py, _, _ = make_zoom_view(
+        (
+            display,
+            scale,
+            new_pan_x,
+            new_pan_y,
+            _,
+            _
+        ) = _make_zoom_view(
             image_bgr,
             title,
             points,
             zoom,
             pan_x,
-            pan_y
+            pan_y,
+            unavailable_mask_full=None
         )
 
-        pan_x = px
-        pan_y = py
+        pan_x = new_pan_x
+        pan_y = new_pan_y
 
-        view["scale"] = scale
-        view["pan_x"] = px
-        view["pan_y"] = py
+        view_state["scale"] = scale
+        view_state["pan_x"] = new_pan_x
+        view_state["pan_y"] = new_pan_y
 
         if len(points) == 2:
+            p1 = points[0]
+            p2 = points[1]
 
-            p1, p2 = points
-
-            distance = (
+            px_distance = (
                 (
                     p2[0] - p1[0]
                 ) ** 2
@@ -77,12 +86,16 @@ def select_scale_line(
 
             cv2.putText(
                 display,
-                f"Distancia: {distance:.2f} px",
-                (10, 116),
+                f"Distancia seleccionada: {px_distance:.2f} px",
+                (
+                    20,
+                    display.shape[0] - 25
+                ),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.65,
                 (0, 255, 255),
-                2
+                2,
+                cv2.LINE_AA
             )
 
         cv2.imshow(
@@ -90,76 +103,80 @@ def select_scale_line(
             display
         )
 
-    def mouse(
+    def on_mouse(
         event,
         x,
         y,
         flags,
         param
     ):
+        nonlocal redraw
 
-        if (
-            event
-            == cv2.EVENT_LBUTTONDOWN
-            and
-            len(points) < 2
-        ):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
 
-            scale = view["scale"]
+        if len(points) >= 2:
+            return
 
-            px = int(
-                round(
-                    view["pan_x"]
-                    + x / scale
-                )
+        scale = view_state["scale"]
+
+        px = int(
+            round(
+                view_state["pan_x"]
+                + x / scale
             )
+        )
 
-            py = int(
-                round(
-                    view["pan_y"]
-                    + y / scale
-                )
+        py = int(
+            round(
+                view_state["pan_y"]
+                + y / scale
             )
+        )
 
-            px = max(
-                0,
-                min(
-                    px,
-                    W - 1
-                )
+        px = max(
+            0,
+            min(
+                px,
+                width - 1
             )
+        )
 
-            py = max(
-                0,
-                min(
-                    py,
-                    H - 1
-                )
+        py = max(
+            0,
+            min(
+                py,
+                height - 1
             )
+        )
 
-            points.append(
-                (
-                    px,
-                    py
-                )
+        points.append(
+            (
+                px,
+                py
             )
+        )
 
-            redraw()
+        redraw = True
 
     cv2.setMouseCallback(
         window,
-        mouse
+        on_mouse
     )
 
-    redraw()
-
-    accepted = False
+    redraw_image()
 
     while True:
+        if redraw:
+            redraw_image()
+            redraw = False
 
-        key = cv2.waitKey(
-            20
-        ) & 0xFF
+        key = (
+            cv2.waitKey(
+                20
+            )
+            & 0xFF
+        )
 
         step = max(
             10,
@@ -172,90 +189,80 @@ def select_scale_line(
             13,
             10
         ):
-
             if len(points) == 2:
-
-                accepted = True
-
+                done = True
                 break
 
         elif key == 27:
+            cancel = True
             break
 
         elif key == ord("z"):
-
             if points:
                 points.pop()
-                redraw()
+                redraw = True
 
         elif key == ord("c"):
-
-            points.clear()
-            redraw()
+            points = []
+            redraw = True
 
         elif key in (
             ord("+"),
             ord("="),
             ord("q")
         ):
-
             zoom = min(
-                12,
+                12.0,
                 zoom * 1.35
             )
 
-            redraw()
+            redraw = True
 
         elif key in (
             ord("-"),
             ord("_"),
             ord("e")
         ):
-
             zoom = max(
-                1,
+                1.0,
                 zoom / 1.35
             )
 
-            redraw()
+            redraw = True
 
         elif key in (
             ord("a"),
             81
         ):
-
             pan_x -= step
-            redraw()
+            redraw = True
 
         elif key in (
             ord("d"),
             83
         ):
-
             pan_x += step
-            redraw()
+            redraw = True
 
         elif key in (
             ord("w"),
             82
         ):
-
             pan_y -= step
-            redraw()
+            redraw = True
 
         elif key in (
             ord("s"),
             84
         ):
-
             pan_y += step
-            redraw()
+            redraw = True
 
     cv2.destroyWindow(
         window
     )
 
-    if not accepted:
+    if cancel or not done:
         return None
 
     return points
@@ -266,8 +273,7 @@ def compute_scale_from_points(
     pt2,
     real_cm
 ):
-
-    px_dist = (
+    px_distance = (
         (
             pt2[0] - pt1[0]
         ) ** 2
@@ -278,24 +284,29 @@ def compute_scale_from_points(
     ) ** 0.5
 
     if (
-        real_cm <= 0
+        real_cm is None
         or
-        px_dist <= 0
+        float(real_cm) <= 0
+        or
+        px_distance <= 0
     ):
         return None
 
+    real_cm = float(
+        real_cm
+    )
+
     px_per_cm = (
-        px_dist
-        / float(real_cm)
+        px_distance
+        / real_cm
     )
 
     cm_per_px = (
-        float(real_cm)
-        / px_dist
+        real_cm
+        / px_distance
     )
 
     return {
-
         "pt1": [
             int(pt1[0]),
             int(pt1[1])
@@ -307,10 +318,10 @@ def compute_scale_from_points(
         ],
 
         "real_cm":
-            float(real_cm),
+            real_cm,
 
         "px_dist":
-            float(px_dist),
+            float(px_distance),
 
         "px_per_cm":
             float(px_per_cm),
