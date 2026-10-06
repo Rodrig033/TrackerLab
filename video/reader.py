@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import math
 import os
 from typing import Iterator, Optional, Tuple, Union
-
 import cv2
 import numpy as np
 
