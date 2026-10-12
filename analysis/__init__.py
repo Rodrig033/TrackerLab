@@ -82,3 +82,5 @@ class FrameRecord:
     def found(self) -> bool:
         """True si el sujeto fue detectado en este frame."""
         return self.cx_abs is not None
+
+    
