@@ -69,7 +69,7 @@ def set_app_icon(window):
     )
 
     ico_path = resource_path(
-        "Tracker_Lab_icon.ico"
+        "Tracker_Lab_icon.png"
     )
 
     if platform.system() == "Windows":
