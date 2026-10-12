@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from .trajectory import (
+    TrajectoryTracker,
+    trajectory_from_records,
+    trajectory_from_xy,
+    draw_trajectory,
+    trajectory_length_px,
+    trajectory_length_cm
+)
+
 __all__ = ["ZoneRecord", "FrameRecord"]
 
 
