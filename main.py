@@ -1809,7 +1809,4 @@ def main():
 
 
 if __name__ == "__main__":
-    show_splash_screen()
-
-    app = TrackerLauncher()
-    result = app.run()
+    main()
