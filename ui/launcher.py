@@ -5,6 +5,8 @@ import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
 import cv2
 
 from ui.dialogs import set_tk_root
@@ -69,7 +71,7 @@ def set_app_icon(window):
     )
 
     ico_path = resource_path(
-        "Tracker_Lab_icon.png"
+        "Tracker_Lab_icon.ico"
     )
 
     if platform.system() == "Windows":
