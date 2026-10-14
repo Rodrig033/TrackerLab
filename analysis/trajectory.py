@@ -274,3 +274,137 @@ def trajectory_length_cm(
             cm_per_px
         )
     )
+
+def create_clean_background(
+    reader,
+    start_frame,
+    end_frame,
+    samples=35
+):
+    if end_frame <= start_frame:
+        frame = reader.read_at(start_frame)
+
+        if frame is None:
+            return None
+
+        return frame.copy()
+
+    indices = np.linspace(
+        start_frame,
+        end_frame,
+        num=min(
+            samples,
+            end_frame - start_frame + 1
+        ),
+        dtype=int
+    )
+
+    frames = []
+
+    for index in indices:
+        frame = reader.read_at(
+            int(index)
+        )
+
+        if frame is not None:
+            frames.append(
+                frame.astype(
+                    np.float32
+                )
+            )
+
+    if not frames:
+        return None
+
+    stack = np.stack(
+        frames,
+        axis=0
+    )
+
+    background = np.median(
+        stack,
+        axis=0
+    )
+
+    return np.clip(
+        background,
+        0,
+        255
+    ).astype(
+        np.uint8
+    )
+
+def save_trajectory_map(
+    background,
+    points,
+    output_path,
+    thickness=3
+):
+    if background is None:
+        return False
+
+    result = background.copy()
+
+    valid_points = []
+
+    for point in points:
+        if point is None:
+            continue
+
+        x, y = point
+
+        valid_points.append(
+            (
+                int(round(x)),
+                int(round(y))
+            )
+        )
+
+    if len(valid_points) >= 2:
+        pts = np.array(
+            valid_points,
+            dtype=np.int32
+        )
+
+        cv2.polylines(
+            result,
+            [pts],
+            False,
+            (
+                0,
+                0,
+                255
+            ),
+            thickness,
+            cv2.LINE_AA
+        )
+
+    if valid_points:
+        cv2.circle(
+            result,
+            valid_points[0],
+            7,
+            (
+                0,
+                255,
+                0
+            ),
+            -1
+        )
+
+        cv2.circle(
+            result,
+            valid_points[-1],
+            7,
+            (
+                255,
+                0,
+                0
+            ),
+            -1
+        )
+
+    return cv2.imwrite(
+        output_path,
+        result
+    )
