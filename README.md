@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🐾 TrackerLab
+# 🐾 🐁 TrackerLab
 
 ### Animal Tracking & Behavioral Analysis
 
