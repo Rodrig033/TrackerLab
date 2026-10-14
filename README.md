@@ -43,7 +43,7 @@ Its purpose is to provide a practical foundation for analyzing animal trajectori
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 ### 🎯 Multiple Tracking Strategies
 
