@@ -8,6 +8,14 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 import cv2
 import numpy as np
 
+import os
+import platform
+import subprocess
+
+from persistence.experiment_config import (
+    experiment_dir
+)
+
 from ui.launcher import (
     TrackerLauncher,
     show_splash_screen
@@ -1166,6 +1174,41 @@ def export_tracking_csv(
         summary_csv
     )
 
+def open_experiment_folder(exp_name):
+    path = experiment_dir(
+        exp_name
+    )
+
+    system = platform.system()
+
+    try:
+        if system == "Windows":
+            os.startfile(
+                path
+            )
+
+        elif system == "Darwin":
+            subprocess.run(
+                [
+                    "open",
+                    path
+                ]
+            )
+
+        else:
+            subprocess.run(
+                [
+                    "xdg-open",
+                    path
+                ]
+            )
+
+    except Exception as error:
+        print(
+            "No se pudo abrir la carpeta:",
+            error
+        )
+
 
 
 def main():
@@ -1726,6 +1769,10 @@ def main():
         print("Resumen generado:")
         print(summary_csv)
 
+        open_experiment_folder(
+            exp_name
+        )
+
         print()
         print(
             "Tracking terminado."
@@ -1754,10 +1801,7 @@ def main():
             "px"
         )
 
-        if (
-            result.kinematic.dist_total_cm
-            is not None
-        ):
+        if result.kinematic.dist_total_cm is not None:
 
             print(
                 "Distancia total:",
@@ -1766,14 +1810,14 @@ def main():
             )
 
         gui_info(
-        "Tracking finalizado",
-        (
-            "Tracking terminado correctamente.\n\n"
-            f"Frames procesados: {result.frames_processed}\n"
-            f"Frames detectados: {result.frames_found}\n"
-            f"Puntos de trayectoria: {len(trajectory)}\n\n"
-            f"CSV:\n{output_csv}\n\n"
-            f"Resumen:\n{summary_csv}"
+            "Tracking finalizado",
+            (
+                "Tracking terminado correctamente.\n\n"
+                f"Frames procesados: {result.frames_processed}\n"
+                f"Frames detectados: {result.frames_found}\n"
+                f"Puntos de trayectoria: {len(trajectory)}\n\n"
+                f"CSV:\n{output_csv}\n\n"
+                f"Resumen:\n{summary_csv}"
             )
         )
 

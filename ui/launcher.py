@@ -5,6 +5,8 @@ import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
 import cv2
 
 from ui.dialogs import set_tk_root
@@ -64,38 +66,49 @@ def resource_path(filename):
 
 
 def set_app_icon(window):
-    png_path = resource_path(
-        "Tracker_Lab_logo.png"
-    )
+    png_path = resource_path("Tracker_Lab_logo.png")
+    ico_path = resource_path("Tracker_Lab_icon.ico")
 
-    ico_path = resource_path(
-        "Tracker_Lab_icon.ico"
-    )
-
+    # Icono específico para Windows.
     if platform.system() == "Windows":
         try:
             if os.path.exists(ico_path):
-                window.iconbitmap(
-                    ico_path
-                )
-        except Exception:
-            pass
+                window.iconbitmap(ico_path)
+                print("[ICON] Icono ICO configurado.")
+        except Exception as error:
+            print("[ICON] Error al cargar el ICO:", repr(error))
 
+    # Imagen PNG para Tkinter.
     try:
-        if os.path.exists(png_path):
-            icon_image = tk.PhotoImage(
-                file=png_path
+        if os.path.exists(ico_path):
+            with Image.open(ico_path) as source:
+                icon = source.convert("RGBA")
+
+            # Reducir el tamaño para utilizarlo como icono.
+            icon.thumbnail((128, 128), Image.Resampling.LANCZOS)
+
+            icon_image = ImageTk.PhotoImage(
+                icon,
+                master=window
             )
 
-            window.iconphoto(
-                True,
-                icon_image
-            )
+            window.iconphoto(True, icon_image)
 
+            # Conservar la referencia a la imagen.
             window._trackerlab_icon = icon_image
 
-    except Exception:
-        pass
+            print(
+                "[ICON] PNG configurado:",
+                ico_path,
+                "| Tamaño:",
+                icon.size
+            )
+
+        else:
+            print("[ICON] No se encontró el archivo PNG:", ico_path)
+
+    except Exception as error:
+        print("[ICON] Error al configurar el PNG:", repr(error))
 
 
 def open_folder(path):
@@ -184,30 +197,18 @@ def show_splash_screen(duration_ms=1600):
         expand=True
     )
 
-    logo_path = resource_path(
-        "Tracker_Lab_logo.png"
-    )
+    logo_path = resource_path("Tracker_Lab_logo.png")
 
     try:
-        logo = tk.PhotoImage(
-            file=logo_path
-        )
+        with Image.open(logo_path) as source:
+            image = source.convert("RGBA")
 
-        factor = max(
-            1,
-            int(
-                max(
-                    logo.width(),
-                    logo.height()
-                ) / 150
-            )
-        )
+        image.thumbnail((300, 100), Image.Resampling.LANCZOS)
 
-        if factor > 1:
-            logo = logo.subsample(
-                factor,
-                factor
-            )
+        logo = ImageTk.PhotoImage(
+            image,
+            master=splash
+        )
 
         logo_label = tk.Label(
             container,
@@ -216,13 +217,20 @@ def show_splash_screen(duration_ms=1600):
         )
 
         logo_label.image = logo
+        logo_label.pack(pady=(10, 15))
 
-        logo_label.pack(
-            pady=(10, 15)
+        print(
+            "[SPLASH] Logo cargado:",
+            logo_path,
+            "| Tamaño:",
+            image.size
         )
 
-    except Exception:
-        pass
+    except Exception as error:
+        print(
+            "[SPLASH] Error al cargar el logo:",
+            repr(error)
+        )
 
     tk.Label(
         container,
@@ -685,30 +693,18 @@ class TrackerLauncher:
             pady=(0, 20)
         )
 
-        logo_path = resource_path(
-            "Tracker_Lab_logo.png"
-        )
+        logo_path = resource_path("Tracker_Lab_logo.png")
 
         try:
-            logo = tk.PhotoImage(
-                file=logo_path
-            )
+            with Image.open(logo_path) as source:
+                image = source.convert("RGBA")
 
-            factor = max(
-                1,
-                int(
-                    max(
-                        logo.width(),
-                        logo.height()
-                    ) / 75
-                )
-            )
+            image.thumbnail((180, 60), Image.Resampling.LANCZOS)
 
-            if factor > 1:
-                logo = logo.subsample(
-                    factor,
-                    factor
-                )
+            logo = ImageTk.PhotoImage(
+                image,
+                master=parent
+            )
 
             logo_label = ttk.Label(
                 header,
@@ -716,15 +712,26 @@ class TrackerLauncher:
             )
 
             logo_label.image = logo
-
             logo_label.pack(
                 side="left",
                 padx=(0, 15)
             )
 
-        except Exception:
-            pass
+            # Mantener la referencia también en la instancia.
+            self._trackerlab_logo = logo
 
+            print(
+                "[HEADER] Logo cargado:",
+                logo_path,
+                "| Tamaño:",
+                image.size
+            )
+
+        except Exception as error:
+            print(
+                "[HEADER] Error al cargar el logo:",
+                repr(error)
+            )
         text_frame = ttk.Frame(
             header
         )
