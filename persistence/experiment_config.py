@@ -11,49 +11,12 @@ APP_VERSION = "1.0"
 
 
 def get_user_data_directory():
-    system = platform.system()
+    home = os.path.expanduser("~")
 
-    if system == "Windows":
-        base = os.environ.get(
-            "APPDATA"
-        )
-
-        if not base:
-            base = os.path.join(
-                os.path.expanduser("~"),
-                "AppData",
-                "Roaming"
-            )
-
-        path = os.path.join(
-            base,
-            APP_NAME
-        )
-
-    elif system == "Darwin":
-        path = os.path.join(
-            os.path.expanduser("~"),
-            "Library",
-            "Application Support",
-            APP_NAME
-        )
-
-    else:
-        base = os.environ.get(
-            "XDG_DATA_HOME"
-        )
-
-        if not base:
-            base = os.path.join(
-                os.path.expanduser("~"),
-                ".local",
-                "share"
-            )
-
-        path = os.path.join(
-            base,
-            APP_NAME
-        )
+    path = os.path.join(
+        home,
+        "TrackerLab_Resultados"
+    )
 
     os.makedirs(
         path,
@@ -65,11 +28,7 @@ def get_user_data_directory():
 
 OUTPUT_DIR = get_user_data_directory()
 
-EXPERIMENTS_DIR = os.path.join(
-    OUTPUT_DIR,
-    "Experimentos"
-)
-
+EXPERIMENTS_DIR = OUTPUT_DIR
 
 def ensure_dir(path):
     os.makedirs(
