@@ -56,6 +56,15 @@ def _segments_touch(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
             or (o3 == 0 and _on_segment(p3, p4, p1)) or (o4 == 0 and _on_segment(p3, p4, p2)))
 
 
+def _all_collinear(points: Sequence[Point]) -> bool:
+    """True si todos los puntos caen sobre una misma recta (o son el mismo punto)."""
+    a = points[0]
+    b = next((p for p in points if p != a), None)
+    if b is None:
+        return True
+    return all(_orient(a, b, c) == 0 for c in points)
+
+
 def polygon_self_intersects(points: Sequence[Point]) -> bool:
     """True si algún par de lados NO contiguos se cruza o se toca (polígono cerrado)."""
     n = len(points)
@@ -117,10 +126,13 @@ class PolygonEditor:
     @property
     def warning(self) -> Optional[str]:
         """Texto (solo ASCII, para cv2.putText) si el polígono tiene un problema evidente."""
-        if len(self._points) >= 3 and polygon_area(self._points) == 0:
-            return "ATENCION: los puntos estan alineados (area cero)"
-        if self.self_intersects:
-            return "ATENCION: el poligono se cruza a si mismo"
+        if len(self._points) >= 3:
+            # Ojo: un "moño" tiene área 0 con la fórmula del cordón (sus dos mitades se
+            # cancelan), así que NO basta mirar el área: primero se revisa la alineación real.
+            if _all_collinear(self._points):
+                return "ATENCION: los puntos estan alineados (area cero)"
+            if self.self_intersects:
+                return "ATENCION: el poligono se cruza a si mismo"
         return None
 
     def midpoints(self) -> List[Tuple[int, Tuple[float, float]]]:

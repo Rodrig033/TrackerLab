@@ -50,11 +50,22 @@ class DibujarTests(unittest.TestCase):
         self.assertEqual(e.points, [])  # un solo deshacer quita el vértice completo
 
     def test_can_accept_pide_tres_puntos(self):
-        e = editor(points=[(1, 1), (5, 5)])
+        e = editor(points=[(10, 10), (300, 10)])
         self.assertFalse(e.can_accept)
-        e.press(9, 1, 1.0)
+        e.press(300, 200, 1.0)
         e.release()
         self.assertTrue(e.can_accept)
+
+    def test_un_clic_cerca_de_un_vertice_lo_atrapa_en_lugar_de_agregar_otro(self):
+        """Diseño: dentro del radio de captura (12 px de pantalla) manda el vértice existente.
+        Para colocar puntos muy juntos hay que acercar el zoom."""
+        e = editor(points=[(1, 1), (5, 5)])
+        self.assertEqual(e.press(9, 1, 1.0), "vertex")  # a 5.7 px de (5,5)
+        e.release()
+        self.assertEqual(len(e.points), 2)
+        self.assertEqual(e.press(9, 1, 8.0), "add")  # con zoom 8x esos 5.7 px son 45 px de pantalla
+        e.release()
+        self.assertEqual(len(e.points), 3)
 
 
 class MoverVerticesTests(unittest.TestCase):
@@ -124,7 +135,9 @@ class CapturaTests(unittest.TestCase):
         # a 8 px de imagen del vértice (100,100)
         self.assertIsNone(e.hit_test(108, 100, scale=2.0))  # a 2x equivale a 16 px de pantalla: fuera
         self.assertEqual(e.hit_test(108, 100, scale=1.0), Hit(VERTEX, 0))  # 8 px: dentro de los 12
-        self.assertEqual(e.hit_test(130, 100, scale=0.5), Hit(VERTEX, 0))  # alejado: 15 px de pantalla... y radio 24 en imagen
+        # alejado (scale 0.5): el radio de 12 px de pantalla equivale a 24 px de imagen
+        self.assertEqual(e.hit_test(120, 100, scale=0.5), Hit(VERTEX, 0))  # 20 px de imagen = 10 de pantalla
+        self.assertIsNone(e.hit_test(130, 100, scale=0.5))  # 30 px de imagen = 15 de pantalla: fuera
         self.assertIsNone(e.hit_test(115, 100, scale=1.0))
 
     def test_elige_el_vertice_mas_cercano(self):
@@ -298,6 +311,11 @@ class GeometriaTests(unittest.TestCase):
         self.assertIsNone(editor().warning)
         self.assertIn("cruza", editor(points=[(0, 0), (100, 100), (100, 0), (0, 100)]).warning)
         self.assertIn("alineados", editor(points=[(0, 0), (5, 5), (10, 10)]).warning)
+        self.assertIn("alineados", editor(points=[(0, 0), (5, 5), (10, 10), (20, 20)]).warning)  # 4 alineados
+        self.assertIn("alineados", editor(points=[(7, 7), (7, 7), (7, 7)]).warning)  # el mismo punto
+        # el moño tiene área 0 con la fórmula del cordón, pero NO está alineado: debe decir que se cruza
+        self.assertEqual(polygon_area([(0, 0), (100, 100), (100, 0), (0, 100)]), 0.0)
+        self.assertIn("cruza", editor(points=[(0, 0), (100, 100), (100, 0), (0, 100)]).warning)
         self.assertTrue(editor(points=[(0, 0), (100, 100), (100, 0), (0, 100)]).warning.isascii())  # cv2.putText solo dibuja ASCII
 
     def test_bounds_invalidos(self):

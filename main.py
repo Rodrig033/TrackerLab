@@ -1,33 +1,20 @@
 from __future__ import annotations
-
 import dataclasses
-
 import itertools
-
 from dataclasses import dataclass, field
-
 from typing import List, Optional, Sequence, Tuple, Union
-
 import cv2
-
 import numpy as np
-
 import os
-
 import platform
-
 import subprocess
-
 import matplotlib
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-
 from matplotlib.backends.backend_pdf import PdfPages
-
 from stats.eda import generate_eda
-
 from persistence.experiment_config import (
 
     experiment_dir
@@ -35,31 +22,20 @@ from persistence.experiment_config import (
 )
 
 from ui.launcher import (
-
     TrackerLauncher,
-
     show_splash_screen
-
 )
 
 from ui.dialogs import (
-
     set_tk_root,
-
     gui_info,
-
     gui_error,
-
     gui_ask_float,
-
     ask_yes_no
-
 )
 
 from ui.calibration_views import (
-
     select_polygon_mask
-
 )
 
 from calibration.zones import (
@@ -67,129 +43,80 @@ from calibration.zones import (
 )
 
 from calibration.spatial_scale import (
-
     select_scale_line,
-
     compute_scale_from_points
-
 )
 
 from calibration.coordinate_system import (
-
     select_xy_origin
-
 )
 
 from analysis.position_filter import (
-
     PositionEMAFilter,
-
     JumpRejector
-
 )
 
 from analysis import FrameRecord
 
 from analysis.kinematic_metrics import (
-
     KinematicSample,
-
     KinematicSummary,
-
     KinematicTracker
-
 )
 
 from analysis.spatial_metrics import (
-
     ZoneGeometry,
-
     ZoneSummary,
-
     ZoneTracker
-
 )
 
 from analysis.trajectory import (
-
     TrajectoryTracker,
-
     create_clean_background,
-
     save_trajectory_map
-
 )
 
 from tracking import (
-
     BaseTracker,
-
     Box,
-
     Detection,
-
     Point
-
 )
 
 from tracking.background_tracker import (
-
     BackgroundTracker,
-
     compute_background,
-
     DEFAULT_PARAMS as BACKGROUND_DEFAULT_PARAMS
-
 )
 
 from tracking.color_tracker import (
-
     ColorTracker,
-
     default_start,
-
     initial_params_from_bbox,
-
     finalize_params
-
 )
 
 from tracking.silhouette_tracker import (
-
     SilhouetteTracker
-
 )
 
 from video.frame_selection import (
-
     FrameRange,
-
     TrackingTiming,
-
     compute_timing,
-
     frame_time_s,
-
     read_background_frames
-
 )
 
 from video.reader import (
-
     VideoReader
-
 )
 
 from persistence.csv_export import (
-
     make_output_csv,
-
     make_summary_csv,
-
     write_csv,
-
     safe_float_str
-
 )
 
 RoiBox = Tuple[int, int, int, int]
@@ -207,33 +134,23 @@ _SAMPLE_FIELDS = tuple(
 class TrackingJob:
 
     reader: VideoReader
-
     frame_range: FrameRange
-
     timing: TrackingTiming
-
     tracker: BaseTracker
-
     roi_box: RoiBox
-
     zones: Sequence[ZoneGeometry] = ()
-
     cm_per_px: Optional[float] = None
-
     xy_origin: Optional[Tuple[float, float]] = None
-
     start: Optional[Tuple[Point, Box]] = None
 
 @dataclass(frozen=True)
 
 class Quit:
-
     pass
 
 @dataclass(frozen=True)
 
 class RecaptureBackground:
-
     pass
 
 @dataclass(frozen=True)
@@ -241,19 +158,13 @@ class RecaptureBackground:
 class Reinit:
 
     bbox: Optional[Box] = None
-
     center: Optional[Point] = None
-
     params: Optional[dict] = None
 
 Command = Union[
-
     Quit,
-
     Reinit,
-
     RecaptureBackground
-
 ]
 
 @dataclass(frozen=True, eq=False)
@@ -261,31 +172,22 @@ Command = Union[
 class FrameEvent:
 
     frame_idx: int
-
     frame: np.ndarray
-
     roi_box: RoiBox
-
     detection: Detection
-
     record: FrameRecord
-
     processed: int
-
     total: int
 
     @property
 
     def roi(self):
-
         x0, y0, w0, h0 = self.roi_box
 
         return self.frame[
 
             y0:y0 + h0,
-
             x0:x0 + w0
-
         ]
 
 @dataclass
@@ -293,37 +195,24 @@ class FrameEvent:
 class TrackingResult:
 
     frames_processed: int
-
     frames_found: int
-
     stopped_by_user: bool
-
     kinematic: KinematicSummary
-
     zones: Tuple[ZoneSummary, ...]
-
     timing: TrackingTiming
-
     frame_range: FrameRange
-
     warnings: List[str] = field(default_factory=list)
-
     records: List[FrameRecord] = field(default_factory=list)
 
 def clamp_box(
 
     x,
-
     y,
-
     w,
-
     h,
 
     width,
-
     height
-
 ):
 
     x = max(
@@ -331,13 +220,9 @@ def clamp_box(
         0,
 
         min(
-
             int(x),
-
             width - 1
-
         )
-
     )
 
     y = max(

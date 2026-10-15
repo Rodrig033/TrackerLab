@@ -1,12 +1,22 @@
 import cv2
 import numpy as np
 
+from ui.polygon_editor import MIDPOINT, VERTEX, PolygonEditor
+
 
 MAX_PREVIEW_W = 1280
 MAX_PREVIEW_H = 800
 
 FRAMESEL_WIN_W = 1400
 FRAMESEL_WIN_H = 900
+
+# Colores y texto de la edición de vértices (cv2.putText solo dibuja ASCII: sin acentos)
+_COLOR_VERTEX = (0, 220, 255)
+_COLOR_SELECTED = (0, 165, 255)
+_COLOR_EDGE = (0, 220, 0)
+_COLOR_EDGE_CLOSE = (0, 180, 0)
+_COLOR_WARNING = (0, 120, 255)
+EDIT_HINT = "Arrastra un vertice | Clic en el circulo hueco de un lado: insertar | X borra vertice | Y rehacer"
 
 
 def contours_from_mask(mask):
@@ -56,7 +66,8 @@ def _draw_top_bar(
     image,
     title,
     points_count,
-    zoom
+    zoom,
+    extra_line=None
 ):
     overlay = image.copy()
 
@@ -108,7 +119,65 @@ def _draw_top_bar(
         cv2.LINE_AA
     )
 
+    if extra_line:
+        cv2.putText(
+            image,
+            extra_line,
+            (20, 88),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (120, 220, 255),
+            1,
+            cv2.LINE_AA
+        )
+
     return image
+
+
+def _draw_polygon_editor(display, editor, pan_x, pan_y, scale):
+    """Dibuja el polígono en edición: relleno de vista previa, lados, vértices y asas.
+
+    Las asas son los círculos huecos al centro de cada lado: un clic ahí inserta un vértice.
+    """
+    h, w = display.shape[:2]
+    pts = [
+        (int(round((px - pan_x) * scale)), int(round((py - pan_y) * scale)))
+        for px, py in editor.points
+    ]
+    n = len(pts)
+    warning = editor.warning
+    edge_color = _COLOR_WARNING if warning else _COLOR_EDGE
+
+    if n >= 3:  # vista previa del área que quedaría seleccionada
+        overlay = display.copy()
+        cv2.fillPoly(overlay, [np.array(pts, dtype=np.int32)], edge_color)
+        display[:] = cv2.addWeighted(overlay, 0.18, display, 0.82, 0)
+
+    for i in range(n - 1):
+        cv2.line(display, pts[i], pts[i + 1], edge_color, 2, cv2.LINE_AA)
+    if n >= 3:
+        cv2.line(display, pts[-1], pts[0], edge_color if warning else _COLOR_EDGE_CLOSE, 2, cv2.LINE_AA)
+
+    hover = editor.hover
+    for i, (mx, my) in editor.midpoints():
+        c = (int(round((mx - pan_x) * scale)), int(round((my - pan_y) * scale)))
+        if not (0 <= c[0] < w and 0 <= c[1] < h):
+            continue
+        hovered = hover is not None and hover.kind == MIDPOINT and hover.index == i
+        cv2.circle(display, c, 6, (0, 0, 0), 2, cv2.LINE_AA)  # contorno oscuro: se ve sobre cualquier fondo
+        cv2.circle(display, c, 5, (255, 255, 255), -1 if hovered else 1, cv2.LINE_AA)
+
+    for i, p in enumerate(pts):
+        if i == editor.selected:
+            cv2.circle(display, p, 11, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.circle(display, p, 8, _COLOR_SELECTED, -1, cv2.LINE_AA)
+        else:
+            if hover is not None and hover.kind == VERTEX and hover.index == i:
+                cv2.circle(display, p, 10, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.circle(display, p, 6, _COLOR_VERTEX, -1, cv2.LINE_AA)
+
+    if warning:
+        cv2.putText(display, warning, (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.65, _COLOR_WARNING, 2, cv2.LINE_AA)
 
 
 def _make_zoom_view(
@@ -120,7 +189,8 @@ def _make_zoom_view(
     pan_y,
     unavailable_mask_full=None,
     max_w=MAX_PREVIEW_W,
-    max_h=MAX_PREVIEW_H
+    max_h=MAX_PREVIEW_H,
+    editor=None
 ):
     height, width = image_bgr.shape[:2]
 
@@ -231,63 +301,67 @@ def _make_zoom_view(
         )
     )
 
-    visible_points = []
+    if editor is None:
+        visible_points = []
 
-    for px, py in pts_full:
-        if (
-            pan_x <= px < pan_x + view_w
-            and
-            pan_y <= py < pan_y + view_h
-        ):
-            visible_points.append(
-                (
-                    int(
-                        (px - pan_x) * scale
-                    ),
-                    int(
-                        (py - pan_y) * scale
+        for px, py in pts_full:
+            if (
+                pan_x <= px < pan_x + view_w
+                and
+                pan_y <= py < pan_y + view_h
+            ):
+                visible_points.append(
+                    (
+                        int(
+                            (px - pan_x) * scale
+                        ),
+                        int(
+                            (py - pan_y) * scale
+                        )
                     )
                 )
-            )
 
-    for point in visible_points:
-        cv2.circle(
-            display,
-            point,
-            6,
-            (0, 220, 255),
-            -1,
-            cv2.LINE_AA
-        )
-
-    if len(visible_points) >= 2:
-        for index in range(
-            len(visible_points) - 1
-        ):
-            cv2.line(
+        for point in visible_points:
+            cv2.circle(
                 display,
-                visible_points[index],
-                visible_points[index + 1],
-                (0, 220, 0),
-                2,
+                point,
+                6,
+                (0, 220, 255),
+                -1,
                 cv2.LINE_AA
             )
 
-    if len(visible_points) >= 3:
-        cv2.line(
-            display,
-            visible_points[-1],
-            visible_points[0],
-            (0, 180, 0),
-            2,
-            cv2.LINE_AA
-        )
+        if len(visible_points) >= 2:
+            for index in range(
+                len(visible_points) - 1
+            ):
+                cv2.line(
+                    display,
+                    visible_points[index],
+                    visible_points[index + 1],
+                    (0, 220, 0),
+                    2,
+                    cv2.LINE_AA
+                )
+
+        if len(visible_points) >= 3:
+            cv2.line(
+                display,
+                visible_points[-1],
+                visible_points[0],
+                (0, 180, 0),
+                2,
+                cv2.LINE_AA
+            )
+    else:
+        _draw_polygon_editor(display, editor, pan_x, pan_y, scale)
 
     display = _draw_top_bar(
         display,
         title,
         len(pts_full),
-        zoom
+        zoom,
+        extra_line=EDIT_HINT if editor is not None else None
     )
 
     return (
@@ -340,7 +414,7 @@ def _select_polygon_mask_zoom_core(
         FRAMESEL_WIN_H
     )
 
-    points = []
+    editor = PolygonEditor((width, height))
 
     zoom = 1.0
 
@@ -371,11 +445,12 @@ def _select_polygon_mask_zoom_core(
         ) = _make_zoom_view(
             image_bgr,
             title,
-            points,
+            editor.points,
             zoom,
             pan_x,
             pan_y,
-            unavailable_mask_full=unavailable_mask_full
+            unavailable_mask_full=unavailable_mask_full,
+            editor=editor
         )
 
         pan_x = new_pan_x
@@ -399,55 +474,33 @@ def _select_polygon_mask_zoom_core(
     ):
         nonlocal redraw
 
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
+        scale = view_state["scale"]
+        fx = view_state["pan_x"] + x / scale
+        fy = view_state["pan_y"] + y / scale
 
-        scale = view_state[
-            "scale"
-        ]
+        if event == cv2.EVENT_LBUTTONDOWN:
+            view_state["flag_seen"] = False
+            editor.press(fx, fy, scale)
+            redraw = True
 
-        px = int(
-            round(
-                view_state[
-                    "pan_x"
-                ]
-                + x / scale
-            )
-        )
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if editor.dragging:
+                if flags & cv2.EVENT_FLAG_LBUTTON:
+                    view_state["flag_seen"] = True
+                elif view_state.get("flag_seen"):
+                    # Este sistema informa el botón durante el arrastre y ya no está
+                    # presionado: se perdió el 'soltar' (p. ej. se soltó fuera de la ventana).
+                    editor.release()
+                    redraw = True
+                    return
+                if editor.drag_to(fx, fy):
+                    redraw = True
+            elif editor.hover_at(fx, fy, scale):
+                redraw = True
 
-        py = int(
-            round(
-                view_state[
-                    "pan_y"
-                ]
-                + y / scale
-            )
-        )
-
-        px = max(
-            0,
-            min(
-                px,
-                width - 1
-            )
-        )
-
-        py = max(
-            0,
-            min(
-                py,
-                height - 1
-            )
-        )
-
-        points.append(
-            (
-                px,
-                py
-            )
-        )
-
-        redraw = True
+        elif event == cv2.EVENT_LBUTTONUP:
+            if editor.release():
+                redraw = True
 
     cv2.setMouseCallback(
         window,
@@ -479,7 +532,7 @@ def _select_polygon_mask_zoom_core(
             13,
             10
         ):
-            if len(points) >= 3:
+            if editor.can_accept:
                 done = True
                 break
 
@@ -487,14 +540,21 @@ def _select_polygon_mask_zoom_core(
             cancel = True
             break
 
-        elif key == ord("z"):
-            if points:
-                points.pop()
+        elif key in (ord("z"), ord("Z")):
+            if editor.undo():
                 redraw = True
 
-        elif key == ord("c"):
-            points = []
-            redraw = True
+        elif key in (ord("y"), ord("Y")):
+            if editor.redo():
+                redraw = True
+
+        elif key in (ord("c"), ord("C")):
+            if editor.clear():  # ya NO es destructivo: Z lo deshace
+                redraw = True
+
+        elif key in (ord("x"), ord("X"), 8, 127):
+            if editor.delete_selected():
+                redraw = True
 
         elif key in (
             ord("+"),
@@ -560,7 +620,7 @@ def _select_polygon_mask_zoom_core(
         )
 
     points_np = np.array(
-        points,
+        editor.points,
         dtype=np.int32
     )
 
