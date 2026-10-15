@@ -14,6 +14,11 @@ from stats.plots import (
     create_correlation_plot
 )
 
+from stats.heatmap import (
+    create_heatmap_plot,
+    create_trajectory_plot
+)
+
 
 def create_summary_csv(
     result,
@@ -109,8 +114,11 @@ def create_summary_csv(
 def generate_eda(
     result,
     output_folder,
-    exp_name
+    exp_name,
+    context=None
 ):
+    # context: stats.heatmap.PlotContext (opcional). Con escala, ROI, origen XY, un frame
+    # de fondo y las zonas, el mapa de calor y la trayectoria salen sobre el video real.
     summary = create_summary_csv(
         result,
         output_folder,
@@ -135,9 +143,25 @@ def generate_eda(
         exp_name
     )
 
+    heatmap = create_heatmap_plot(
+        result,
+        output_folder,
+        exp_name,
+        context=context
+    )
+
+    trajectory = create_trajectory_plot(
+        result,
+        output_folder,
+        exp_name,
+        context=context
+    )
+
     return {
         "summary": summary,
         "velocity": velocity,
         "acceleration": acceleration,
-        "correlation": correlation
+        "correlation": correlation,
+        "heatmap": heatmap,
+        "trajectory": trajectory
     }

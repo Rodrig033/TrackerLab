@@ -16,7 +16,7 @@ _COLOR_SELECTED = (0, 165, 255)
 _COLOR_EDGE = (0, 220, 0)
 _COLOR_EDGE_CLOSE = (0, 180, 0)
 _COLOR_WARNING = (0, 120, 255)
-EDIT_HINT = "Arrastra un vertice | Clic en el circulo hueco de un lado: insertar | X borra vertice | Y rehacer"
+EDIT_HINT = "Arrastra un vertice | Clic en el circulo hueco de un lado: insertar | X borra vertice | Z rehacer"
 
 
 def contours_from_mask(mask):
