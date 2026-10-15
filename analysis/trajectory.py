@@ -273,9 +273,6 @@ def trajectory_length_cm(
         * float(
             cm_per_px
         )
-<<<<<<< HEAD
-    )
-=======
     )
 
 def create_clean_background(
@@ -411,4 +408,3 @@ def save_trajectory_map(
         output_path,
         result
     )
->>>>>>> origin/desarrollo-rafa
