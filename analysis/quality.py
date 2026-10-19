@@ -8,6 +8,7 @@ __all__ = [
     "STATUS_DETECTED",
     "STATUS_LOST",
     "STATUS_RECOVERED",
+    "STATUS_REJECTED",
     "frame_status",
     "Gap",
     "Jump",
@@ -24,6 +25,8 @@ STATUS_LOST = "perdido"
 #: Reservado: lo usará la recuperación del sujeto cuando exista. Una posición
 #: recuperada NO es una detección y debe poder distinguirse en los resultados.
 STATUS_RECOVERED = "recuperado"
+#: El tracker vio algo, pero el filtro de saltos de la corrida lo descartó (cuenta como frame sin dato).
+STATUS_REJECTED = "rechazado"
 
 VERDICT_GOOD = "bueno"
 VERDICT_REVIEW = "revisar"
@@ -32,7 +35,10 @@ VERDICT_NONE = "sin datos"
 
 
 def frame_status(record) -> str:
-    """Estado de un frame: ``detectado`` o ``perdido`` (``recuperado`` queda reservado)."""
+    """Estado de un frame. Usa ``record.status`` si el pipeline lo informó; si no, detectado o perdido."""
+    status = getattr(record, "status", "")
+    if status:
+        return status
     return STATUS_DETECTED if record.found else STATUS_LOST
 
 
@@ -65,6 +71,8 @@ class QualityThresholds:
     jump_fraction_of_extent: float = 0.30
     #: …y nunca se considera salto algo menor a esto (píxeles).
     jump_min_px: float = 25.0
+    #: % de frames que el filtro de saltos descartó a partir del cual conviene revisar.
+    rejected_pct_warn: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,10 @@ class QualityReport:
     jump_threshold_px: Optional[float]
     verdict: str
     reasons: Tuple[str, ...]
+    # Informados por el pipeline mediante FrameRecord.status (0 si no se informó).
+    frames_rejected: int = 0
+    frames_recovered: int = 0
+    rejected_pct: float = 0.0
 
     @property
     def n_jumps(self) -> int:
@@ -119,6 +131,8 @@ class QualityMonitor:
 
         self._total = 0
         self._detected = 0
+        self._rejected = 0
+        self._recovered = 0
         self._gaps: List[Gap] = []
         self._gap_first: Optional[int] = None
         self._gap_last: Optional[int] = None
@@ -137,6 +151,11 @@ class QualityMonitor:
 
     def update(self, rec) -> None:
         self._total += 1
+        status = getattr(rec, "status", "")
+        if status == STATUS_REJECTED:
+            self._rejected += 1
+        elif status == STATUS_RECOVERED:
+            self._recovered += 1
         if not rec.found:
             if self._gap_n == 0:
                 self._gap_first = rec.frame
@@ -180,7 +199,8 @@ class QualityMonitor:
                 thr = max(self.th.jump_fraction_of_extent * diag, self.th.jump_min_px)
             jumps = [Jump(f, s) for f, s in self._steps if s > thr]
 
-        verdict, reasons = self._judge(total, lost_pct, longest, jumps)
+        rejected_pct = 100.0 * self._rejected / total if total else 0.0
+        verdict, reasons = self._judge(total, lost_pct, longest, jumps, rejected_pct)
         return QualityReport(
             frames_total=total,
             frames_detected=detected,
@@ -199,9 +219,12 @@ class QualityMonitor:
             jump_threshold_px=thr,
             verdict=verdict,
             reasons=tuple(reasons),
+            frames_rejected=self._rejected,
+            frames_recovered=self._recovered,
+            rejected_pct=rejected_pct,
         )
 
-    def _judge(self, total, lost_pct, longest, jumps):
+    def _judge(self, total, lost_pct, longest, jumps, rejected_pct=0.0):
         th = self.th
         if total == 0:
             return VERDICT_NONE, ["No hay registros."]
@@ -227,6 +250,11 @@ class QualityMonitor:
                 raise_to(VERDICT_REVIEW, f"Hueco más largo: {longest.duration_s:.1f} s (frames {longest.first_frame} a {longest.last_frame}).")
         if jumps:
             raise_to(VERDICT_REVIEW, f"{len(jumps)} salto(s) de posición sospechosos; primero en el frame {jumps[0].frame}.")
+        if self._rejected and rejected_pct >= th.rejected_pct_warn:
+            raise_to(VERDICT_REVIEW, f"{self._rejected} frames descartados por el filtro de saltos ({rejected_pct:.1f} %): "
+                                     "el umbral puede ser demasiado bajo para esta resolución o velocidad.")
+        if self._recovered:
+            reasons.append(f"{self._recovered} posición(es) recuperada(s) tras una pérdida: conviene confirmar que es el mismo sujeto.")
         return verdict, reasons
 
 
@@ -258,6 +286,8 @@ def quality_rows(report: QualityReport) -> List[List[object]]:
         ["calidad_perdidos_al_final", report.trailing_lost_frames],
         ["calidad_saltos", report.n_jumps],
         ["calidad_umbral_salto_px", thr],
+        ["calidad_frames_rechazados", report.frames_rejected],
+        ["calidad_frames_recuperados", report.frames_recovered],
     ]
 
 
@@ -271,5 +301,7 @@ def format_quality(report: QualityReport) -> str:
         f"hueco más largo: {report.longest_gap_s:.2f} s",
         f"  Saltos sospechosos: {report.n_jumps}",
     ]
+    if report.frames_rejected or report.frames_recovered:
+        lines.append(f"  Descartados por el filtro de saltos: {report.frames_rejected}; recuperados: {report.frames_recovered}")
     lines += [f"  - {r}" for r in report.reasons]
     return "\n".join(lines)

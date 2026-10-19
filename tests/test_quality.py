@@ -5,6 +5,8 @@ from analysis import FrameRecord
 from analysis.quality import (
     STATUS_DETECTED,
     STATUS_LOST,
+    STATUS_RECOVERED,
+    STATUS_REJECTED,
     QualityMonitor,
     QualityThresholds,
     assess_quality,
@@ -39,6 +41,58 @@ class EstadoTests(unittest.TestCase):
     def test_estado_por_frame(self):
         d, l = track(".x")
         self.assertEqual((frame_status(d), frame_status(l)), (STATUS_DETECTED, STATUS_LOST))
+
+
+class EstadosDelPipelineTests(unittest.TestCase):
+    """FrameRecord.status (opcional) distingue 'rechazado' y 'recuperado' de un simple 'perdido'."""
+
+    def reg(self, i, status="", found=True):
+        if not found:
+            return FrameRecord(frame=i, time_s=i * DT, dist_acum_px=0.0, status=status)
+        return FrameRecord(frame=i, time_s=i * DT, dist_acum_px=0.0, cx_abs=float(i), cy_abs_inv=10.0, status=status)
+
+    def test_frame_status_usa_el_estado_informado_y_si_no_el_de_siempre(self):
+        self.assertEqual(frame_status(self.reg(0, STATUS_REJECTED, found=False)), STATUS_REJECTED)
+        self.assertEqual(frame_status(self.reg(0, STATUS_RECOVERED)), STATUS_RECOVERED)
+        self.assertEqual(frame_status(self.reg(0)), STATUS_DETECTED)  # sin status: como antes
+        self.assertEqual(frame_status(self.reg(0, found=False)), STATUS_LOST)
+
+    def test_se_cuentan_rechazados_y_recuperados(self):
+        regs = [self.reg(i) for i in range(100)]
+        for i in (10, 20, 30, 40, 50, 60):
+            regs[i] = self.reg(i, STATUS_REJECTED, found=False)
+        regs[70] = self.reg(70, STATUS_RECOVERED)
+        rep = assess_quality(regs, DT)
+        self.assertEqual((rep.frames_rejected, rep.frames_recovered, rep.rejected_pct), (6, 1, 6.0))
+        self.assertEqual(rep.verdict, "revisar")
+        self.assertTrue(any("6 frames descartados" in r for r in rep.reasons))
+        self.assertTrue(any("1 posición(es) recuperada(s)" in r for r in rep.reasons))
+
+    def test_los_rechazados_cuentan_como_frames_sin_dato(self):
+        regs = [self.reg(i) for i in range(50)] + [self.reg(50 + i, STATUS_REJECTED, found=False) for i in range(5)]
+        rep = assess_quality(regs, DT)
+        self.assertEqual((rep.frames_lost, rep.frames_detected), (5, 50))  # un rechazado no tiene posición
+        self.assertEqual(rep.gaps[0].n_frames, 5)
+
+    def test_sin_estados_el_informe_es_el_de_antes(self):
+        rep = assess_quality(lin(100, lost={5, 6}), DT)
+        self.assertEqual((rep.frames_rejected, rep.frames_recovered, rep.rejected_pct, rep.verdict), (0, 0, 0.0, "bueno"))
+        self.assertEqual(rep.reasons, ())
+
+    def test_umbral_de_rechazados_configurable(self):
+        regs = [self.reg(i) for i in range(100)]
+        regs[10] = self.reg(10, STATUS_REJECTED, found=False)  # 1 %
+        self.assertEqual(assess_quality(regs, DT).verdict, "bueno")
+        estricto = QualityThresholds(rejected_pct_warn=0.5)
+        self.assertEqual(assess_quality(regs, DT, estricto).verdict, "revisar")
+
+    def test_filas_y_texto_incluyen_los_contadores(self):
+        regs = [self.reg(i) for i in range(20)]
+        regs[3] = self.reg(3, STATUS_REJECTED, found=False)
+        rep = assess_quality(regs, DT)
+        filas = dict((a, b) for a, b in quality_rows(rep))
+        self.assertEqual((filas["calidad_frames_rechazados"], filas["calidad_frames_recuperados"]), (1, 0))
+        self.assertIn("Descartados por el filtro de saltos: 1", format_quality(rep))
 
 
 class ConteoYHuecosTests(unittest.TestCase):
@@ -207,7 +261,7 @@ class IntegracionConElPipelineTests(unittest.TestCase):
 
         import cv2
 
-        from main import TrackingJob, run_tracking
+        from pipeline import TrackingJob, run_tracking
         from tracking.background_tracker import DEFAULT_PARAMS, BackgroundTracker, compute_background
         from video.frame_selection import FrameRange, compute_timing, read_background_frames
         from video.reader import VideoReader

@@ -3,20 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from .trajectory import (
-    TrajectoryTracker,
-    trajectory_from_records,
-    trajectory_from_xy,
-    draw_trajectory,
-    trajectory_length_px,
-    trajectory_length_cm
-)
-
 __all__ = ["ZoneRecord", "FrameRecord"]
 
 
 @dataclass(frozen=True)
 class ZoneRecord:
+   
     name: str
     inside: int  # 1 = el punto está dentro de la zona, 0 = fuera
 
@@ -45,27 +37,26 @@ class FrameRecord:
     ``zones`` queda vacío (el exportador escribe celdas en blanco).
     """
 
-    # --- Identificación del frame ---
     frame: int
-    time_s: float  # relativo al frame de inicio del segmento exportado
+    time_s: float  
 
-    # --- Distancia acumulada: se escribe SIEMPRE, incluso con sujeto perdido ---
+    # Distancia acumulada: se escribe SIEMPRE, incluso con sujeto perdido 
     dist_acum_px: float
     dist_acum_cm: Optional[float] = None  # None si no hay escala
 
-    # --- Posición absoluta en la imagen completa ---
+    # Posición absoluta en la imagen completa 
     cx_abs: Optional[float] = None
     # Y invertida respecto a la imagen: (alto_frame - cy). Es la columna
     # ``cy_abs_inv`` del CSV (Y positiva hacia arriba).
     cy_abs_inv: Optional[float] = None
 
-    # --- Posición relativa al origen XY (None si no se calibró origen/escala) ---
+    # Posición relativa al origen XY (None si no se calibró origen/escala) 
     x_rel_px: Optional[float] = None
     y_rel_px: Optional[float] = None
     x_rel_cm: Optional[float] = None
     y_rel_cm: Optional[float] = None
 
-    # --- Cinemática instantánea ---
+    # Cinemática instantánea 
     dist_px: Optional[float] = None  # desplazamiento respecto al frame previo
     dist_cm: Optional[float] = None
     vel_px_s: Optional[float] = None
@@ -75,12 +66,13 @@ class FrameRecord:
     ang_deg: Optional[float] = None  # cambio de dirección entre desplazamientos
     vel_angular_deg_s: Optional[float] = None
 
-    # --- Métricas por zona (vacío si el sujeto no fue encontrado) ---
+    # Métricas por zona (vacío si el sujeto no fue encontrado) 
     zones: Tuple[ZoneRecord, ...] = ()
+    status: str = ""
+    cx_raw: Optional[float] = None
+    cy_raw_inv: Optional[float] = None
 
     @property
     def found(self) -> bool:
         """True si el sujeto fue detectado en este frame."""
         return self.cx_abs is not None
-
-    

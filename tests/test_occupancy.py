@@ -1,8 +1,6 @@
 import random
 import unittest
-
 import numpy as np
-
 from analysis import FrameRecord
 from analysis.occupancy import OccupancyMap, average_maps, detected_points, occupancy_map
 
@@ -152,7 +150,7 @@ class PruebaConPipelineTests(unittest.TestCase):
 
         import cv2
 
-        from main import TrackingJob, run_tracking
+        from pipeline import TrackingJob, run_tracking
         from tracking.background_tracker import DEFAULT_PARAMS, BackgroundTracker, compute_background
         from video.frame_selection import FrameRange, compute_timing, read_background_frames
         from video.reader import VideoReader

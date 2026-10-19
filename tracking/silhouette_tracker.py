@@ -96,20 +96,33 @@ def _components(mask: np.ndarray, min_area: float = 10,
     return labels, out
 
 
-def _choose_best_initial_component(cands: List[_Component], box_w: int, box_h: int) -> Optional[_Component]:
+def _touches_border(bbox: Box, box_w: int, box_h: int) -> bool:
+    x, y, w, h = bbox
+    return x <= 0 or y <= 0 or x + w >= box_w or y + h >= box_h
+
+
+def _choose_best_initial_component(cands: List[_Component], box_w: int, box_h: int,
+                                   border_aware: bool = False) -> Optional[_Component]:
+    """Elige el componente que mejor representa al sujeto dentro de la ventana dibujada.
+
+    Con ``border_aware`` los componentes que NO tocan el borde de la ventana tienen prioridad: el sujeto
+    dibujado queda dentro de la ventana, mientras que el fondo siempre la toca. Si todos la tocan (ventana
+    muy ajustada), se aplica la regla de siempre.
+    """
     if not cands:
         return None
     cx_box, cy_box = box_w / 2.0, box_h / 2.0
     box_area = float(box_w * box_h)
-    best, best_score = None, None
+    best, best_key = None, None
     for c in cands:
         if c.area < max(20.0, 0.01 * box_area) or c.area > 0.92 * box_area:
             continue
         cx, cy = c.center
         dist = ((cx - cx_box) ** 2 + (cy - cy_box) ** 2) ** 0.5
         score = dist - 0.008 * c.area
-        if best is None or score < best_score:
-            best, best_score = c, score
+        key = (border_aware and _touches_border(c.bbox, box_w, box_h), score)
+        if best is None or key < best_key:
+            best, best_key = c, key
     return best
 
 
@@ -136,12 +149,8 @@ def create_model_from_bbox(
     roi_bgr: np.ndarray,
     bbox: Tuple[float, float, float, float],
     include_mask: Optional[np.ndarray] = None,
+    border_aware: bool = False,
 ) -> Optional[SilhouetteModel]:
-    """Aprende la silueta inicial a partir de la ventana dibujada por el usuario.
-
-    roi_bgr: recorte del ROI SIN enmascarar. Devuelve ``None`` si la ventana es
-    muy pequeña (<= 5 px) o no contiene una silueta plausible.
-    """
     x, y, w, h = [int(round(v)) for v in bbox]
     x, y, w, h = _clamp_box(x, y, w, h, roi_bgr.shape[1], roi_bgr.shape[0])
     if w <= 5 or h <= 5:
@@ -157,18 +166,19 @@ def create_model_from_bbox(
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
     m_light = _otsu_light(gray)
-    best = None  # (score, componente, etiquetas, polaridad)
+    best = None  # (clave, componente, etiquetas, polaridad); clave = (toca el borde, puntaje)
     for pol in (POLARITY_LIGHT, POLARITY_DARK):
         m = _binary_from_light(m_light, pol, valid_crop)
         labels, cand = _components(m, min_area=10, max_area=0.95 * w * h)
-        chosen = _choose_best_initial_component(cand, w, h)
+        chosen = _choose_best_initial_component(cand, w, h, border_aware)
         if chosen is None:
             continue
         cx, cy = chosen.center
         dist = ((cx - w / 2.0) ** 2 + (cy - h / 2.0) ** 2) ** 0.5
         score = dist - 0.008 * chosen.area
-        if best is None or score < best[0]:
-            best = (score, chosen, labels, pol)
+        key = (border_aware and _touches_border(chosen.bbox, w, h), score)
+        if best is None or key < best[0]:
+            best = (key, chosen, labels, pol)
 
     if best is None:
         return None
@@ -186,16 +196,17 @@ def create_model_from_bbox(
     )
 
 
-# Tracker
 
+# Tracker
 class SilhouetteTracker(BaseTracker):
     """Tracker por silueta (modo "2")."""
 
     mode_id = MODE_SILHOUETTE
 
-    def __init__(self, include_mask: np.ndarray, model: SilhouetteModel):
+    def __init__(self, include_mask: np.ndarray, model: SilhouetteModel, border_aware: bool = False):
         super().__init__(include_mask, None)
         self.model = model
+        self.border_aware = bool(border_aware)
 
     @classmethod
     def from_bbox(
@@ -203,12 +214,17 @@ class SilhouetteTracker(BaseTracker):
         include_mask: np.ndarray,
         roi_bgr: np.ndarray,
         bbox: Tuple[float, float, float, float],
+        border_aware: bool = False,
     ) -> Optional["SilhouetteTracker"]:
-        """Crea el tracker aprendiendo la silueta de ``bbox`` (o ``None`` si no se pudo)."""
-        model = create_model_from_bbox(roi_bgr, bbox, include_mask)
+        """Crea el tracker aprendiendo la silueta de ``bbox`` (o ``None`` si no se pudo).
+
+        border_aware=True hace la selección independiente del margen de la ventana (ver
+        ``create_model_from_bbox``). Se recuerda para los reinicios con ``reinit``.
+        """
+        model = create_model_from_bbox(roi_bgr, bbox, include_mask, border_aware)
         if model is None:
             return None
-        tr = cls(include_mask, model)
+        tr = cls(include_mask, model, border_aware)
         tr.reset(model.center, model.bbox)
         return tr
 
@@ -219,14 +235,6 @@ class SilhouetteTracker(BaseTracker):
             )
 
     def locate(self, roi_bgr: np.ndarray) -> Detection:
-        """Busca al sujeto en TODO el ROI (frame de inicio) según el modelo.
-
-        Compatible con candidatos de ambas polaridades; penaliza la polaridad
-        no preferida, el área distinta a la de referencia y las formas muy
-        alargadas. Si lo encuentra, actualiza el modelo (incluida la
-        polaridad) pero NO mueve ``last_center`` / ``last_bbox``: para eso
-        usa ``start()``.
-        """
         self._check(roi_bgr)
         model = self.model
         H, W = roi_bgr.shape[:2]
@@ -271,13 +279,6 @@ class SilhouetteTracker(BaseTracker):
         return Detection(center=model.center, bbox=chosen.bbox, mask=sil_full, mask_kind=MASK_SILHOUETTE)
 
     def start(self, roi_start_bgr: np.ndarray) -> Detection:
-        """Posición inicial en el frame de inicio del tracking.
-
-        Intenta ``locate``. Si no encuentra nada, arranca desde el centro y la
-        caja del modelo (la silueta aprendida en el frame muestra) y devuelve
-        una ``Detection`` con ``found == False`` y la silueta del modelo como
-        máscara: quien llama puede avisar al usuario.
-        """
         det = self.locate(roi_start_bgr)
         if det.found:
             self.reset(det.center, det.bbox)
@@ -286,11 +287,7 @@ class SilhouetteTracker(BaseTracker):
         return Detection(mask=self.model.last_silhouette, mask_kind=MASK_SILHOUETTE)
 
     def reinit(self, roi_bgr: np.ndarray, bbox: Tuple[float, float, float, float]) -> bool:
-        """Tecla 'r': aprende un modelo nuevo desde otra ventana.
-
-        Devuelve ``False`` (sin tocar nada) si no se pudo extraer una silueta.
-        """
-        model = create_model_from_bbox(roi_bgr, bbox, self.include_mask)
+        model = create_model_from_bbox(roi_bgr, bbox, self.include_mask, self.border_aware)
         if model is None:
             return False
         self.model = model

@@ -1,3 +1,10 @@
+"""Pruebas de tracking/silhouette_tracker.py.
+
+Ejecutar desde la raíz del proyecto:
+    python -m pytest tests/test_silhouette_tracker.py -v
+"""
+
+import math
 import os
 import random
 import tempfile
@@ -14,6 +21,7 @@ from tracking.silhouette_tracker import (
     create_model_from_bbox,
 )
 from video.reader import VideoReader
+
 
 def _o_clamp_box(x, y, w, h, W, H):
     x = max(0, min(int(x), W - 1))
@@ -253,7 +261,6 @@ def _o_run(rois, sample_roi, bbox0, include_mask, reinit=None):
             last_bbox = (bx, by, bw, bh)
         out.append((pick, sil, last_center, last_bbox, dict(model, last_silhouette=None)))
     return start, out
-
 
 # Escenas sintéticas
 
@@ -521,11 +528,6 @@ class LimitacionesHeredadasTests(unittest.TestCase):
     """Comportamientos del original que se conservan a propósito (candidatos a mejora)."""
 
     def test_sujeto_claro_con_roi_no_rectangular_no_se_localiza(self):
-        """Otsu se calcula incluyendo la zona enmascarada (negra): con sujeto claro sobre
-        fondo oscuro el umbral cae (~30 en vez de ~131), el fondo queda como un solo
-        componente enorme y se descarta. El original hace exactamente lo mismo.
-        Si algún día se corrige (Otsu solo sobre píxeles válidos), esta prueba debe invertirse.
-        """
         frames, truth = make_frames(12, dark=False, seed=4)
         rois = crop(frames)
         m = roi_mask("elipse")
@@ -540,6 +542,95 @@ class LimitacionesHeredadasTests(unittest.TestCase):
         model_r = _o_create_subject_model_from_bbox(cv2.bitwise_and(rois[0], rois[0], mask=mr), bbox, mr)
         self.assertIsNotNone(_o_localize_subject_by_model(cv2.bitwise_and(rois[10], rois[10], mask=mr), dict(model_r), mr)[0])
         self.assertTrue(SilhouetteTracker.from_bbox(mr, rois[0], bbox).locate(rois[10]).found)
+
+
+class SeleccionIndependienteDelMargenTests(unittest.TestCase):
+    """border_aware: la silueta aprendida no debe depender del margen que deja el usuario al dibujar la ventana."""
+
+    W, H = 400, 300
+    MARGENES = (2, 5, 8, 10, 15, 20, 30, 40, 80)
+    REAL = math.pi * 15 * 9  # área de la elipse sintética
+
+    def frame(self, x, y, dark=True, noise=0.0, seed=1):
+        rng = np.random.default_rng(seed)
+        base = np.full((self.H, self.W), 175 if dark else 60, np.float32)
+        if noise:
+            base += rng.normal(0, noise, (self.H, self.W))
+        f = cv2.cvtColor(np.clip(base, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        cv2.ellipse(f, (x, y), (15, 9), 0, 0, 360, (45,) * 3 if dark else (215,) * 3, -1)
+        return f
+
+    def caja(self, margen):
+        return (80 - 15 - margen, 110 - 9 - margen, 30 + 2 * margen, 18 + 2 * margen)
+
+    def modelo_correcto(self, dark, noise, margen, aware):
+        mask = np.full((self.H, self.W), 255, np.uint8)
+        m = create_model_from_bbox(self.frame(80, 110, dark, noise), self.caja(margen), mask, border_aware=aware)
+        return m is not None and m.polarity == ("dark" if dark else "light") and abs(m.area_ref - self.REAL) / self.REAL < 0.6
+
+    def test_con_border_aware_el_modelo_es_el_sujeto_con_cualquier_margen(self):
+        for dark in (True, False):
+            for noise in (0.0, 6.0):
+                for margen in self.MARGENES:
+                    self.assertTrue(self.modelo_correcto(dark, noise, margen, True), msg=f"oscuro={dark} ruido={noise} margen={margen}")
+
+    def test_limitacion_heredada_el_original_aprende_el_fondo_con_margenes_de_5_a_20_px(self):
+        """Documenta el comportamiento original (se conserva por omisión). Si algún día cambia el valor
+        por defecto, esta prueba debe invertirse."""
+        for dark in (True, False):
+            for margen in (5, 8, 10, 15, 20):
+                self.assertFalse(self.modelo_correcto(dark, 0.0, margen, False), msg=f"oscuro={dark} margen={margen}")
+            for margen in (2, 30, 40, 80):
+                self.assertTrue(self.modelo_correcto(dark, 0.0, margen, False), msg=f"oscuro={dark} margen={margen}")
+
+    def test_el_seguimiento_funciona_tras_la_seleccion_con_cualquier_margen(self):
+        mask = np.full((self.H, self.W), 255, np.uint8)
+        for margen in (5, 10, 20):  # los que fallaban por completo con el original
+            tr = SilhouetteTracker.from_bbox(mask, self.frame(80, 110), self.caja(margen), border_aware=True)
+            tr.start(self.frame(80, 110))
+            errores = []
+            for i in range(1, 21):
+                t = (80 + 2 * i, 110)
+                det = tr.update(self.frame(*t))
+                self.assertTrue(det.found, msg=f"margen={margen} frame={i}")
+                errores.append(math.dist(det.center, t))
+            self.assertLess(max(errores), 2.5, msg=f"margen={margen}")
+
+    def test_una_ventana_exactamente_ajustada_sigue_funcionando(self):
+        """Si todo lo que hay toca el borde, se aplica la regla de siempre (no se devuelve None)."""
+        mask = np.full((self.H, self.W), 255, np.uint8)
+        caja = self.caja(0)
+        a = create_model_from_bbox(self.frame(80, 110), caja, mask, border_aware=False)
+        b = create_model_from_bbox(self.frame(80, 110), caja, mask, border_aware=True)
+        self.assertIsNotNone(b)
+        self.assertEqual((a.polarity, a.area_ref), (b.polarity, b.area_ref))
+
+    def test_por_omision_esta_apagado_y_reinit_hereda_la_opcion(self):
+        mask = np.full((self.H, self.W), 255, np.uint8)
+        self.assertFalse(SilhouetteTracker.from_bbox(mask, self.frame(80, 110), self.caja(2)).border_aware)
+        for aware, esperado in ((True, "dark"), (False, "light")):
+            tr = SilhouetteTracker.from_bbox(mask, self.frame(80, 110), self.caja(2), border_aware=aware)
+            self.assertTrue(tr.reinit(self.frame(80, 110), self.caja(10)))  # margen de 10 px
+            self.assertEqual(tr.model.polarity, esperado, msg=f"border_aware={aware}")
+
+    def test_el_selector_prefiere_lo_que_no_toca_el_borde_dentro_de_la_misma_polaridad(self):
+        """Una pared oscura que toca el borde de la ventana y el ratón oscuro compiten en la MISMA polaridad."""
+        from tracking.silhouette_tracker import _Component, _choose_best_initial_component
+        ancho, alto = 60, 40
+        pared = _Component(area=1400.0, bbox=(0, 0, 40, 40), center=(20.0, 20.0), label=1)  # toca el borde izquierdo
+        raton = _Component(area=420.0, bbox=(20, 11, 30, 18), center=(35.0, 20.0), label=2)  # queda dentro
+        self.assertIs(_choose_best_initial_component([pared, raton], ancho, alto, border_aware=False), pared)  # gana por área
+        self.assertIs(_choose_best_initial_component([pared, raton], ancho, alto, border_aware=True), raton)
+        # si solo hay candidatos que tocan el borde, se aplica la regla de siempre
+        self.assertIs(_choose_best_initial_component([pared], ancho, alto, border_aware=True), pared)
+
+    def test_con_la_opcion_apagada_el_resultado_es_el_de_siempre(self):
+        mask = np.full((self.H, self.W), 255, np.uint8)
+        f = self.frame(80, 110, True, 6.0)
+        for margen in self.MARGENES:
+            a = create_model_from_bbox(f, self.caja(margen), mask)
+            b = create_model_from_bbox(f, self.caja(margen), mask, border_aware=False)
+            self.assertEqual((a.polarity, a.area_ref, a.bbox, a.center), (b.polarity, b.area_ref, b.bbox, b.center))
 
 
 class IntegracionConVideoTests(unittest.TestCase):
