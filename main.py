@@ -140,7 +140,7 @@ from learning.session import DatasetSession
 
 SILHOUETTE_BORDER_AWARE = True
 SILHOUETTE_REACQUIRE = True
-COLLECT_DATASET = False
+COLLECT_DATASET = True
 
 
 def clamp_box(
