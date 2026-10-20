@@ -17,7 +17,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 from stats.eda import generate_eda
 from persistence.experiment_config import (
 
-    experiment_dir
+    experiment_dir,
+
+    APP_VERSION
 
 )
 
@@ -118,6 +120,7 @@ from persistence.csv_export import (
     write_csv,
     safe_float_str
 )
+from analysis.provenance import provenance_rows
 
 from pipeline import (
     RoiBox,
@@ -130,6 +133,14 @@ from pipeline import (
     TrackingResult,
     run_tracking
 )
+from tracking.reacquisition import (
+    SilhouetteReacquirer
+)
+from learning.session import DatasetSession
+
+SILHOUETTE_BORDER_AWARE = True
+SILHOUETTE_REACQUIRE = True
+COLLECT_DATASET = False
 
 
 def clamp_box(
@@ -1268,6 +1279,9 @@ def export_tracking_csv(
 
         ])
 
+    # Cómo se obtuvo el resultado (opciones de procesamiento y calidad): solo agrega filas al final del resumen.
+    summary_rows.extend(provenance_rows(result, APP_VERSION))
+
     write_csv(
 
         summary_csv,
@@ -2392,15 +2406,7 @@ def main():
 
             tracker = (
 
-                SilhouetteTracker.from_bbox(
-
-                    include_mask,
-
-                    sample_roi,
-
-                    bbox
-
-                )
+                SilhouetteTracker.from_bbox(include_mask, sample_roi, bbox, border_aware=SILHOUETTE_BORDER_AWARE)
 
             )
 
@@ -2914,21 +2920,30 @@ def main():
 
                 bbox
 
+            ),
+                reacquirer=(SilhouetteReacquirer(tracker) if SILHOUETTE_REACQUIRE and tracking_mode == "2" else None)
             )
 
+        dataset = DatasetSession(
+            COLLECT_DATASET,
+            experiment_dir(options.get("exp_name", "experimento")),
+            video_path=video_path,
+            duration_s=(frame_range.end - frame_range.start + 1) / timing.video_fps
         )
 
         result = run_tracking(
 
             job,
 
-            on_frame=on_frame,
+            on_frame=dataset.wrap(on_frame),
 
             on_record=on_record,
 
             keep_records=True
 
         )
+
+        dataset.finish(result)
 
         cv2.destroyAllWindows()
 
@@ -3130,19 +3145,9 @@ def main():
 
         print()
 
-        print(
+        print("Tracking terminado.")
 
-            "Tracking terminado."
-
-        )
-
-        print(
-
-            "Frames procesados:",
-
-            result.frames_processed
-
-        )
+        print("Frames procesados:", result.frames_processed)
 
         print(
 
@@ -3152,27 +3157,9 @@ def main():
 
         )
 
-        print(
+        print("Puntos de trayectoria:", len(trajectory))
 
-            "Puntos de trayectoria:",
-
-            len(
-
-                trajectory
-
-            )
-
-        )
-
-        print(
-
-            "Distancia total:",
-
-            result.kinematic.dist_total_px,
-
-            "px"
-
-        )
+        print( "Distancia total:", result.kinematic.dist_total_px, "px")
 
         if result.kinematic.dist_total_cm is not None:
 

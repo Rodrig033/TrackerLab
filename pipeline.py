@@ -4,7 +4,7 @@ import dataclasses
 import itertools
 import math
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -39,7 +39,6 @@ _SAMPLE_FIELDS = tuple(f.name for f in dataclasses.fields(KinematicSample))
 
 
 # Entrada
-
 @dataclass
 class TrackingJob:
     reader: VideoReader
@@ -63,7 +62,6 @@ class TrackingJob:
 
 
 # Órdenes que la interfaz puede devolver desde ``on_frame``
-
 @dataclass(frozen=True)
 class Quit:
     """Detener el tracking (tecla 'q')."""
@@ -90,9 +88,7 @@ class Reinit:
 Command = Union[Quit, Reinit, RecaptureBackground]
 
 
-
 # Salida
-
 @dataclass(frozen=True, eq=False)
 class FrameEvent:
     """Lo que recibe ``on_frame`` en cada frame. ``frame`` es de SOLO LECTURA: copiarlo para dibujar.
@@ -129,6 +125,19 @@ class TrackingResult:
     frames_rejected: int = 0  # el tracker vio algo y el filtro de saltos lo descartó
     frames_recovered: int = 0  # posiciones aceptadas por la regla de recuperación (incluye las reencontradas)
     frames_reacquired: int = 0  # de ellas, las encontradas por el buscador (reacquirer)
+    # Con qué opciones se procesó (para registrarlo junto a los resultados). Los valores None significan
+    # "apagado / no aplica". Ver ``analysis.provenance``.
+    settings: Dict[str, Any] = field(default_factory=dict)
+
+
+def _mode_name(tracker: BaseTracker) -> str:
+    if isinstance(tracker, BackgroundTracker):
+        return "fondo"
+    if isinstance(tracker, SilhouetteTracker):
+        return "silueta"
+    if isinstance(tracker, ColorTracker):
+        return "color"
+    return type(tracker).__name__
 
 
 # Validación e inicio
@@ -230,6 +239,20 @@ def run_tracking(
     full_height = job.reader.height
     cm = job.cm_per_px
     total = rng.count(timing.frame_step)
+
+    settings: Dict[str, Any] = {
+        "modo_seguimiento": _mode_name(tracker),
+        "suavizado_alpha": job.smoothing_alpha,
+        "salto_max_px": gate,  # umbral efectivo, en px por frame procesado (None = sin rechazo de saltos)
+        "salto_max_vel_px_s": job.jump_max_speed_px_s,
+        "recuperacion_tras_frames": job.recovery_after if rejector is not None else None,
+        "recuperacion_distancia_px": job.recovery_distance_px if rejector is not None else None,
+        "adopcion_tras_s": job.adopt_after_s if rejector is not None else None,
+        "buscador_sujeto": type(job.reacquirer).__name__ if job.reacquirer is not None else None,
+        "buscador_tras_frames": job.reacquire_after_frames if job.reacquirer is not None else None,
+        "buscador_cada_frames": job.reacquire_every if job.reacquirer is not None else None,
+        "seleccion_independiente_del_margen": getattr(tracker, "border_aware", None),
+    }
 
     warnings: List[str] = []
     records: List[FrameRecord] = []
@@ -413,4 +436,5 @@ def run_tracking(
         frames_rejected=rejected,
         frames_recovered=recovered,
         frames_reacquired=reacquired,
+        settings=settings,
     )

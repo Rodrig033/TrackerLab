@@ -205,6 +205,61 @@ class ReglasDelRecolectorTests(unittest.TestCase):
                 DatasetCollector(os.path.join(self.tmp.name, "x"), **kw)
 
 
+class IntervaloMinimoYFichaTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def tiempos_guardados(self, c):
+        return [r["time_s"] for r in c._rows]
+
+    def test_a_lo_sumo_una_imagen_por_intervalo(self):
+        c = coleccionista(self.tmp.name, min_stable_frames=1, min_interval_s=1.0)
+        for i in range(50):  # 10 frames por segundo durante 5 s
+            c(evento(i, t=i * 0.1))
+        t = self.tiempos_guardados(c)
+        self.assertEqual(len(t), 5)  # 0, 1, 2, 3 y 4 s
+        self.assertTrue(all(b - a >= 1.0 - 1e-6 for a, b in zip(t, t[1:])))
+        self.assertEqual(c._skipped["intervalo"], 45)
+
+    def test_sin_intervalo_se_guarda_todo_como_antes(self):
+        c = coleccionista(self.tmp.name, min_stable_frames=1)
+        for i in range(20):
+            c(evento(i, t=i * 0.1))
+        self.assertEqual(len(c._rows), 20)
+        self.assertEqual(c._skipped["intervalo"], 0)
+
+    def test_un_frame_en_zona_de_separacion_no_consume_el_intervalo(self):
+        """Lo que se descarta por separación no cuenta como 'imagen guardada' para el intervalo."""
+        c = coleccionista(self.tmp.name, min_stable_frames=1, min_interval_s=1.0, block_seconds=10.0, val_every=3, buffer_s=1.0)
+        for i, t in enumerate([19.5, 19.9, 20.3, 21.4]):  # 19.5 y 19.9 y 20.3 quedan en separación (frontera en 20 s)
+            c(evento(i, t=t))
+        self.assertEqual(self.tiempos_guardados(c), [21.4])
+
+    def test_intervalo_invalido(self):
+        with self.assertRaises(ValueError):
+            DatasetCollector(os.path.join(self.tmp.name, "x"), min_interval_s=-1.0)
+
+    def test_la_ficha_recibe_datos_extra_y_registra_el_intervalo(self):
+        c = coleccionista(self.tmp.name, min_stable_frames=1, min_interval_s=2.5)
+        c(evento(0))
+        info = c.finalize({"opciones_de_procesamiento": {"suavizado_alpha": 0.35, "salto_max_px": None}, "modo_de_seguimiento": "silueta"})
+        self.assertEqual(info["parametros"]["min_interval_s"], 2.5)
+        self.assertEqual(info["opciones_de_procesamiento"], {"suavizado_alpha": 0.35, "salto_max_px": None})
+        self.assertEqual(info["modo_de_seguimiento"], "silueta")  # lo extra prevalece
+        with open(os.path.join(self.tmp.name, "dataset_info.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), info)  # lo escrito coincide con lo devuelto (y es JSON válido)
+
+    def test_sin_extra_la_ficha_es_la_de_siempre(self):
+        c = coleccionista(self.tmp.name, min_stable_frames=1)
+        c(evento(0))
+        info = c.finalize()
+        self.assertNotIn("opciones_de_procesamiento", info)
+        self.assertEqual(info["modo_de_seguimiento"], "")
+
+
 class AlineacionImagenEtiquetaTests(unittest.TestCase):
     def test_la_caja_guardada_cae_sobre_el_sujeto_con_el_desplazamiento_del_roi(self):
         with tempfile.TemporaryDirectory() as tmp:

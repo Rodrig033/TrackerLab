@@ -1,3 +1,5 @@
+"""Conjunto de datos para el detector de ratones, generado a partir del seguimiento clásico."""
+
 from __future__ import annotations
 
 import csv
@@ -49,7 +51,6 @@ def parse_yolo_label_line(line: str, frame_w: int, frame_h: int) -> Tuple[int, B
 
 
 # Reparto entrenamiento / validación
-
 def split_for_time(time_s: float, block_seconds: float = 20.0, val_every: int = 5, buffer_s: float = 1.0) -> Optional[str]:
     if val_every < 2 or block_seconds <= 0 or buffer_s < 0 or 2 * buffer_s >= block_seconds:
         raise ValueError("Parámetros de reparto inválidos.")
@@ -86,6 +87,7 @@ class DatasetCollector:
         video_name: str = "video",
         *,
         stride: int = 5,
+        min_interval_s: float = 0.0,
         min_stable_frames: int = 10,
         area_ratio: Tuple[float, float] = (0.5, 2.0),
         border_px: int = 2,
@@ -97,11 +99,11 @@ class DatasetCollector:
         tracker_mode: str = "",
         video_path: Optional[str] = None,
     ):
-        if stride < 1 or min_stable_frames < 1:
-            raise ValueError("stride y min_stable_frames deben ser >= 1")
+        if stride < 1 or min_stable_frames < 1 or min_interval_s < 0:
+            raise ValueError("stride y min_stable_frames deben ser >= 1 y min_interval_s >= 0")
         split_for_time(0.0, block_seconds, val_every, buffer_s)  # valida los parámetros del reparto
         self.out_dir, self.video_name = out_dir, video_name
-        self.stride, self.min_stable = stride, min_stable_frames
+        self.stride, self.min_stable, self.min_interval_s = stride, min_stable_frames, float(min_interval_s)
         self.area_ratio, self.border_px = area_ratio, border_px
         self.block_seconds, self.val_every, self.buffer_s = block_seconds, val_every, buffer_s
         self.jpeg_quality, self.max_images = jpeg_quality, max_images
@@ -111,6 +113,7 @@ class DatasetCollector:
             os.makedirs(os.path.join(out_dir, "labels", split), exist_ok=True)
         self._stable = 0
         self._eligible = 0
+        self._last_saved_t: Optional[float] = None
         self._areas: Deque[float] = deque(maxlen=50)
         self._skipped: Counter = Counter()
         self._rows: List[Dict[str, Any]] = []
@@ -144,6 +147,9 @@ class DatasetCollector:
         self._eligible += 1
         if (self._eligible - 1) % self.stride != 0:
             return self._skip("muestreo")
+        if (self.min_interval_s > 0 and self._last_saved_t is not None
+                and rec.time_s - self._last_saved_t < self.min_interval_s - 1e-9):
+            return self._skip("intervalo")
         split = split_for_time(rec.time_s, self.block_seconds, self.val_every, self.buffer_s)
         if split is None:
             return self._skip("separacion")
@@ -167,9 +173,14 @@ class DatasetCollector:
             f.write(line + "\n")
         self._rows.append({"archivo": f"{split}/{name}", "split": split, "frame": event.frame_idx,
                            "time_s": round(rec.time_s, 6), "x": box[0], "y": box[1], "w": box[2], "h": box[3]})
+        self._last_saved_t = rec.time_s
 
-    def finalize(self) -> Dict[str, Any]:
-        """Escribe ``data.yaml``, ``manifest.csv`` y ``dataset_info.json``. Devuelve el contenido de este último."""
+    def finalize(self, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Escribe ``data.yaml``, ``manifest.csv`` y ``dataset_info.json``. Devuelve el contenido de este último.
+
+        extra: datos adicionales que se agregan a la ficha (por ejemplo, las opciones de procesamiento de la
+        corrida que generó las etiquetas). Si repite una clave, prevalece lo indicado aquí.
+        """
         with open(os.path.join(self.out_dir, "manifest.csv"), "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=["archivo", "split", "frame", "time_s", "x", "y", "w", "h"])
             w.writeheader()
@@ -186,13 +197,16 @@ class DatasetCollector:
                       "mismas etiquetas es circular; para medir de verdad hace falta validación etiquetada a mano."),
             "modo_de_seguimiento": self.tracker_mode,
             "video": {"nombre": self.video_name, **(video_fingerprint(self.video_path) if self.video_path and os.path.exists(self.video_path) else {})},
-            "parametros": {"stride": self.stride, "min_stable_frames": self.min_stable, "area_ratio": list(self.area_ratio),
+            "parametros": {"stride": self.stride, "min_interval_s": self.min_interval_s, "min_stable_frames": self.min_stable,
+                           "area_ratio": list(self.area_ratio),
                            "border_px": self.border_px, "block_seconds": self.block_seconds, "val_every": self.val_every,
                            "buffer_s": self.buffer_s, "jpeg_quality": self.jpeg_quality, "max_images": self.max_images},
             "imagenes": {"train": counts.get("train", 0), "val": counts.get("val", 0), "total": len(self._rows)},
             "frames_descartados_por_motivo": dict(self._skipped),
             "clases": list(CLASS_NAMES),
         }
+        if extra:
+            info.update(extra)
         with open(os.path.join(self.out_dir, "dataset_info.json"), "w", encoding="utf-8") as f:
             json.dump(info, f, indent=2, ensure_ascii=False)
         return info
@@ -201,8 +215,7 @@ class DatasetCollector:
 # Revisión visual
 def make_audit_sheet(dataset_dir: str, out_path: str, n: int = 24, cols: int = 6, thumb_w: int = 320, seed: int = 0) -> Optional[str]:
     """Hoja de contactos con ``n`` ejemplos al azar y su caja dibujada, para revisar las etiquetas a simple vista.
-
-    Devuelve la ruta guardada, o None si el conjunto está vacío.
+       Devuelve la ruta guardada, o None si el conjunto está vacío.
     """
     items = []
     for split in ("train", "val"):

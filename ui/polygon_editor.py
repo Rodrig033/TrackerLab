@@ -21,9 +21,7 @@ class Hit:
     index: int  # índice del vértice; para MIDPOINT, índice i del lado i -> (i+1) % n
 
 
-# ----------------------------------------------------------------------
 # Geometría
-# ----------------------------------------------------------------------
 def polygon_area(points: Sequence[Point]) -> float:
     """Área (fórmula del cordón); 0.0 con menos de 3 puntos o puntos alineados."""
     n = len(points)
@@ -80,9 +78,7 @@ def polygon_self_intersects(points: Sequence[Point]) -> bool:
     return False
 
 
-# ----------------------------------------------------------------------
 # Editor
-# ----------------------------------------------------------------------
 class PolygonEditor:
     """Estado y reglas de edición de un polígono."""
 
@@ -103,9 +99,7 @@ class PolygonEditor:
         self._drag_index: Optional[int] = None
         self._drag_origin: Optional[Tuple[Point, ...]] = None  # estado previo, si falta registrar el movimiento
 
-    # ------------------------------------------------------------------
     # Consulta
-    # ------------------------------------------------------------------
     @property
     def points(self) -> List[Point]:
         return list(self._points)
@@ -211,7 +205,7 @@ class PolygonEditor:
             self._record(before)
             self.selected = self._drag_index = hit.index + 1
             self._drag_origin = None
-            return "insert"
+            return "insert" 
 
         before = self._snapshot()
         self._points.append(self._clamp(x, y))
@@ -242,9 +236,7 @@ class PolygonEditor:
         self._drag_origin = None
         return changed
 
-    # ------------------------------------------------------------------
     # Acciones de teclado
-    # ------------------------------------------------------------------
     def delete_selected(self) -> bool:
         """Borra el vértice seleccionado. Devuelve False si no hay ninguno."""
         self.release()
