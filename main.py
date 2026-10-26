@@ -121,6 +121,7 @@ from persistence.csv_export import (
     safe_float_str
 )
 from analysis.provenance import provenance_rows
+from persistence.run_inputs import save_run_inputs
 
 from pipeline import (
     RoiBox,
@@ -140,8 +141,10 @@ from learning.session import DatasetSession
 
 SILHOUETTE_BORDER_AWARE = True
 SILHOUETTE_REACQUIRE = True
-COLLECT_DATASET = True
+COLLECT_DATASET = False
 
+# Interruptor
+SAVE_RUN_INPUTS = True
 
 def clamp_box(
 
@@ -2899,29 +2902,28 @@ def main():
         job = TrackingJob(
 
             reader=reader,
-
             frame_range=frame_range,
-
             timing=timing,
-
             tracker=tracker,
-
             roi_box=roi_box,
-
             zones=zones,
-
             cm_per_px=cm_per_px,
-
             xy_origin=xy_origin,
-
             start=(
-
                 start_center,
-
                 bbox
-
             ),
                 reacquirer=(SilhouetteReacquirer(tracker) if SILHOUETTE_REACQUIRE and tracking_mode == "2" else None)
+            )
+
+        if SAVE_RUN_INPUTS:
+            save_run_inputs(
+                experiment_dir(options.get("exp_name", "experimento")),
+                job,
+                video_path=video_path,
+                options=options,
+                sample_idx=sample_idx,
+                app_version=APP_VERSION
             )
 
         dataset = DatasetSession(
@@ -2931,17 +2933,9 @@ def main():
             duration_s=(frame_range.end - frame_range.start + 1) / timing.video_fps
         )
 
-        result = run_tracking(
+        result = run_tracking(job, on_frame=dataset.wrap(on_frame), on_record=on_record,  keep_records=True)
 
-            job,
 
-            on_frame=dataset.wrap(on_frame),
-
-            on_record=on_record,
-
-            keep_records=True
-
-        )
 
         dataset.finish(result)
 
