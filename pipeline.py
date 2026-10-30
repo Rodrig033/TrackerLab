@@ -216,6 +216,7 @@ def _recapture_background(job: TrackingJob, frame_idx: int, warnings: List[str])
         tr.set_background(bg)
 
 
+
 # Bucle principal
 def run_tracking(
     job: TrackingJob,
@@ -252,6 +253,12 @@ def run_tracking(
         "buscador_tras_frames": job.reacquire_after_frames if job.reacquirer is not None else None,
         "buscador_cada_frames": job.reacquire_every if job.reacquirer is not None else None,
         "seleccion_independiente_del_margen": getattr(tracker, "border_aware", None),
+        # Calibración usada (para que el reporte y el resumen digan en qué unidades y respecto a qué se midió)
+        "escala_cm_por_px": cm,
+        # Listas, no tuplas: las opciones se guardan tal cual en JSON y deben salir idénticas al leerlas
+        "origen_xy_px": [float(v) for v in job.xy_origin] if job.xy_origin is not None else None,
+        "roi_box": [int(v) for v in job.roi_box],
+        "video_tamano_px": [int(job.reader.width), int(full_height)],
     }
 
     warnings: List[str] = []

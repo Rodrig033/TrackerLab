@@ -1,3 +1,9 @@
+"""Pruebas de analysis/quality.py.
+
+Ejecutar desde la raíz del proyecto:
+    python -m pytest tests/test_quality.py -v
+"""
+
 import random
 import unittest
 
@@ -7,9 +13,11 @@ from analysis.quality import (
     STATUS_LOST,
     STATUS_RECOVERED,
     STATUS_REJECTED,
+    VERDICT_ADVICE,
     QualityMonitor,
     QualityThresholds,
     assess_quality,
+    criteria_lines,
     format_quality,
     frame_status,
     quality_rows,
@@ -203,6 +211,82 @@ class VeredictoTests(unittest.TestCase):
         estricto = QualityThresholds(lost_pct_warn=0.5, lost_pct_bad=1.0)
         self.assertEqual(assess_quality(lin(100, lost={5, 50}), DT, estricto).verdict, "deficiente")
         self.assertEqual(assess_quality(lin(100, lost={5, 50}), DT).verdict, "bueno")
+
+
+class CriteriosYRecomendacionTests(unittest.TestCase):
+    """El investigador debe poder saber CON BASE EN QUÉ se clasificó su experimento."""
+
+    CUSTOM = QualityThresholds(lost_pct_warn=7.0, lost_pct_bad=20.0, longest_gap_s_warn=2.0, longest_gap_s_bad=6.0,
+                               jump_fraction_of_extent=0.4, jump_min_px=30.0, rejected_pct_warn=8.0)
+
+    @staticmethod
+    def disperso(n, k):
+        """n frames con k perdidos AISLADOS (huecos de un frame), para medir solo el porcentaje."""
+        paso = n // k if k else n
+        return lin(n, lost={paso * (i + 1) - 1 for i in range(k)})
+
+    def veredicto(self, regs, th):
+        return assess_quality(regs, DT, th).verdict
+
+    def test_el_informe_guarda_los_umbrales_usados(self):
+        self.assertEqual(assess_quality(lin(50), DT, self.CUSTOM).thresholds, self.CUSTOM)
+        self.assertEqual(assess_quality(lin(50), DT).thresholds, QualityThresholds())
+
+    def test_el_texto_de_los_criterios_usa_los_umbrales_reales_no_los_de_fabrica(self):
+        texto = " ".join(criteria_lines(self.CUSTOM))
+        for esperado in ("7 %", "20 %", "2 s", "6 s", "40 %", "30 px", "8 %"):
+            self.assertIn(esperado, texto)
+        self.assertNotIn("15 %", texto)  # el 15 % de fábrica no debe aparecer con umbrales personalizados
+
+    def test_el_texto_coincide_con_el_comportamiento_en_el_limite(self):
+        """'o más' en el texto significa >=: justo en el umbral ya cuenta; un poco por debajo no."""
+        th = self.CUSTOM
+        self.assertEqual(self.veredicto(self.disperso(100, 6), th), "bueno")  # 6 % < 7 %
+        self.assertEqual(self.veredicto(self.disperso(100, 7), th), "revisar")  # 7 % = 7 %
+        self.assertEqual(self.veredicto(self.disperso(100, 19), th), "revisar")  # 19 % < 20 %
+        self.assertEqual(self.veredicto(self.disperso(100, 20), th), "deficiente")  # 20 % = 20 %
+
+    def test_limites_de_hueco(self):
+        th = self.CUSTOM
+        n = 2000  # 20 frames = 1 %: el porcentaje no interviene
+        gap = lambda k: lin(n, lost=set(range(100, 100 + k)))
+        self.assertEqual(self.veredicto(gap(19), th), "bueno")  # 1.9 s < 2 s
+        self.assertEqual(self.veredicto(gap(20), th), "revisar")  # 2.0 s
+        self.assertEqual(self.veredicto(gap(59), th), "revisar")  # 5.9 s < 6 s
+        self.assertEqual(self.veredicto(gap(60), th), "deficiente")  # 6.0 s
+
+    def test_la_recomendacion_depende_del_veredicto_y_solo_el_peor_dice_intentar_de_nuevo(self):
+        self.assertIn("intentar de nuevo", VERDICT_ADVICE["deficiente"])
+        for v in ("bueno", "revisar", "sin datos"):
+            self.assertNotIn("intentar de nuevo", VERDICT_ADVICE[v])
+        self.assertTrue(VERDICT_ADVICE["revisar"].startswith("Revisar"))
+
+    def test_las_filas_del_resumen_explican_el_veredicto(self):
+        rep = assess_quality(self.disperso(100, 10), DT, self.CUSTOM)
+        d = {k: v for k, v in quality_rows(rep)}
+        self.assertEqual(d["calidad_veredicto"], "revisar")
+        self.assertEqual(d["calidad_recomendacion"], VERDICT_ADVICE["revisar"])
+        self.assertIn("Frames perdidos", d["calidad_motivos"])
+        self.assertEqual(d["calidad_criterio_revisar_perdidos_pct"], "7")
+        self.assertEqual(d["calidad_criterio_deficiente_perdidos_pct"], "20")
+        self.assertEqual(d["calidad_criterio_revisar_hueco_s"], "2")
+        self.assertEqual(d["calidad_criterio_deficiente_hueco_s"], "6")
+        self.assertEqual(d["calidad_criterio_salto_fraccion_del_recorrido"], "0.4")
+        self.assertEqual(d["calidad_criterio_salto_minimo_px"], "30")
+        self.assertEqual(d["calidad_criterio_revisar_descartados_pct"], "8")
+        self.assertEqual(len([k for k, _ in quality_rows(rep)]), len(set(k for k, _ in quality_rows(rep))))  # etiquetas únicas
+
+    def test_un_bueno_dice_que_no_hubo_motivos(self):
+        d = {k: v for k, v in quality_rows(assess_quality(lin(100), DT))}
+        self.assertEqual((d["calidad_veredicto"], d["calidad_motivos"]), ("bueno", "ninguno"))
+
+    def test_el_texto_para_la_interfaz_incluye_recomendacion_y_criterios(self):
+        txt = format_quality(assess_quality(self.disperso(100, 30), DT, self.CUSTOM))
+        self.assertIn("DEFICIENTE", txt)
+        self.assertIn("intentar de nuevo", txt)
+        self.assertIn("Criterios de clasificación", txt)
+        for linea in criteria_lines(self.CUSTOM):
+            self.assertIn(linea, txt)
 
 
 class StreamingTests(unittest.TestCase):

@@ -98,6 +98,8 @@ class QualityReport:
     frames_rejected: int = 0
     frames_recovered: int = 0
     rejected_pct: float = 0.0
+    #: Umbrales con los que se asignó el veredicto (para poder explicarlo).
+    thresholds: Optional[QualityThresholds] = None
 
     @property
     def n_jumps(self) -> int:
@@ -118,11 +120,6 @@ class QualityMonitor:
         thresholds: QualityThresholds = QualityThresholds(),
         max_step_px: Optional[float] = None,
     ):
-        """
-        dt: segundos entre frames procesados (``TrackingTiming.dt``).
-        max_step_px: umbral de salto fijo (px entre dos frames). Si es None se
-                     deduce del recorrido (``thresholds``).
-        """
         if not dt > 0:
             raise ValueError(f"dt debe ser > 0, recibido {dt}")
         self.dt = float(dt)
@@ -222,6 +219,7 @@ class QualityMonitor:
             frames_rejected=self._rejected,
             frames_recovered=self._recovered,
             rejected_pct=rejected_pct,
+            thresholds=self.th,
         )
 
     def _judge(self, total, lost_pct, longest, jumps, rejected_pct=0.0):
@@ -271,6 +269,32 @@ def assess_quality(
     return mon.report()
 
 
+#: Qué hacer con cada veredicto (lo que lee el investigador).
+VERDICT_ADVICE = {
+    VERDICT_GOOD: "Los resultados pueden usarse.",
+    VERDICT_REVIEW: "Revisar el seguimiento (trayectoria y video) antes de analizar; usar los resultados con cautela.",
+    VERDICT_BAD: "Se recomienda intentar de nuevo: repetir el análisis con otro modo o parámetros de seguimiento, "
+                 "o repetir el registro.",
+    VERDICT_NONE: "No hay registros para evaluar.",
+}
+
+
+def criteria_lines(th: Optional[QualityThresholds] = None) -> List[str]:
+    """Reglas con las que se asigna el veredicto, escritas con los umbrales realmente usados."""
+    th = th or QualityThresholds()
+    return [
+        "Bueno: no se cumple ningún criterio de revisión ni de deficiencia.",
+        f"Revisar: se cumple alguno de estos: {th.lost_pct_warn:g} % o más de frames perdidos; "
+        f"un hueco de {th.longest_gap_s_warn:g} s o más; algún salto de posición sospechoso "
+        f"(más de {th.jump_fraction_of_extent * 100:g} % de la diagonal del recorrido y de al menos {th.jump_min_px:g} px); "
+        f"{th.rejected_pct_warn:g} % o más de frames descartados por el filtro de saltos.",
+        f"Deficiente: se cumple alguno de estos: {th.lost_pct_bad:g} % o más de frames perdidos; "
+        f"un hueco de {th.longest_gap_s_bad:g} s o más; el sujeto no se detectó en ningún frame.",
+        "El veredicto es el del peor criterio. Los umbrales son valores orientativos definidos por el equipo de "
+        "TrackerLab, no un estándar.",
+    ]
+
+
 def quality_rows(report: QualityReport) -> List[List[object]]:
     """Filas ``[metrica, valor]`` para agregar al CSV de resumen (si se decide incluirlas)."""
     thr = "" if report.jump_threshold_px is None else f"{report.jump_threshold_px:.2f}"
@@ -288,6 +312,21 @@ def quality_rows(report: QualityReport) -> List[List[object]]:
         ["calidad_umbral_salto_px", thr],
         ["calidad_frames_rechazados", report.frames_rejected],
         ["calidad_frames_recuperados", report.frames_recovered],
+        ["calidad_motivos", " | ".join(report.reasons) if report.reasons else "ninguno"],
+        ["calidad_recomendacion", VERDICT_ADVICE.get(report.verdict, "")],
+    ] + _criteria_rows(report.thresholds or QualityThresholds())
+
+
+def _criteria_rows(th: QualityThresholds) -> List[List[object]]:
+    """Los umbrales usados, uno por fila, para que el CSV de resumen explique el veredicto."""
+    return [
+        ["calidad_criterio_revisar_perdidos_pct", f"{th.lost_pct_warn:g}"],
+        ["calidad_criterio_deficiente_perdidos_pct", f"{th.lost_pct_bad:g}"],
+        ["calidad_criterio_revisar_hueco_s", f"{th.longest_gap_s_warn:g}"],
+        ["calidad_criterio_deficiente_hueco_s", f"{th.longest_gap_s_bad:g}"],
+        ["calidad_criterio_salto_fraccion_del_recorrido", f"{th.jump_fraction_of_extent:g}"],
+        ["calidad_criterio_salto_minimo_px", f"{th.jump_min_px:g}"],
+        ["calidad_criterio_revisar_descartados_pct", f"{th.rejected_pct_warn:g}"],
     ]
 
 
@@ -304,4 +343,7 @@ def format_quality(report: QualityReport) -> str:
     if report.frames_rejected or report.frames_recovered:
         lines.append(f"  Descartados por el filtro de saltos: {report.frames_rejected}; recuperados: {report.frames_recovered}")
     lines += [f"  - {r}" for r in report.reasons]
+    lines.append(f"  Recomendación: {VERDICT_ADVICE.get(report.verdict, '')}")
+    lines.append("  Criterios de clasificación:")
+    lines += [f"    {c}" for c in criteria_lines(report.thresholds)]
     return "\n".join(lines)

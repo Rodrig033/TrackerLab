@@ -25,6 +25,14 @@ class PlotContext:
     xy_origin: Optional[Tuple[float, float]] = None  # (ox, oy) en px de imagen
     background_bgr: Optional[np.ndarray] = None  # frame sobre el que dibujar
     zones: Sequence = ()  # objetos con .name y .mask (máscara del FRAME COMPLETO)
+    #: Referencia de los ejes. "roi": el 0 está en la esquina inferior izquierda del ROI (lo más legible, y
+    #: no depende de dónde se marcó el origen). "csv": relativos al origen XY calibrado, igual que las
+    #: columnas x_rel / y_rel del CSV. Sin ``roi_box`` y ``frame_size`` no se puede anclar al ROI.
+    axes_origin: str = "roi"
+
+    def __post_init__(self):
+        if self.axes_origin not in ("roi", "csv"):
+            raise ValueError(f"axes_origin debe ser 'roi' o 'csv', no {self.axes_origin!r}")
 
 
 def infer_cm_per_px(records) -> Optional[float]:
@@ -32,7 +40,6 @@ def infer_cm_per_px(records) -> Optional[float]:
     ratios = [r.dist_cm / r.dist_px for r in records
               if r.dist_px is not None and r.dist_cm is not None and r.dist_px > 1e-9]
     return float(np.median(ratios)) if ratios else None
-
 
 
 # Vista: de píxeles de imagen (Y hacia arriba) a las unidades que se muestran
@@ -43,6 +50,7 @@ class _View:
     oy: float  # origen en y (px, con Y hacia arriba)
     units: str  # "cm" o "px"
     relative: bool  # ¿relativa al origen XY calibrado?
+    from_roi: bool = False  # ¿el 0 está en la esquina inferior izquierda del ROI?
 
     def x(self, px):
         return (px - self.ox) * self.k
@@ -54,6 +62,9 @@ class _View:
 def _make_view(ctx: PlotContext, records) -> _View:
     cm = ctx.cm_per_px if ctx.cm_per_px else infer_cm_per_px(records)
     k, units = (float(cm), "cm") if cm else (1.0, "px")
+    if ctx.axes_origin == "roi" and ctx.roi_box is not None and ctx.frame_size is not None:
+        x0, y0, w0, h0 = ctx.roi_box
+        return _View(k, float(x0), float(ctx.frame_size[1]) - float(y0 + h0), units, False, True)
     if ctx.xy_origin is not None and ctx.frame_size is not None:
         ox, oy_img = ctx.xy_origin
         return _View(k, float(ox), float(ctx.frame_size[1]) - float(oy_img), units, True)
@@ -117,11 +128,32 @@ def _draw_zones(ax, ctx: PlotContext, view: _View) -> None:
 
 
 def _axis_labels(ax, view: _View) -> None:
-    rel = "relativo al origen, " if view.relative else ""
+    rel = "desde la esquina del ROI, " if view.from_roi else ("relativo al origen, " if view.relative else "")
     ax.set_xlabel(f"x ({rel}{view.units})")
     ax.set_ylabel(f"y ({rel}{view.units})")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.15)
+
+
+def _signed(v: float) -> str:
+    return f"{'+' if v >= 0 else '−'} {abs(v):.4g}"
+
+
+def _calibration_note(ctx: PlotContext, view: _View) -> str:
+    """Texto al pie: escala usada y a qué se refieren los ejes, para que la figura se explique sola."""
+    partes = [f"Escala: 1 px = {view.k:.4g} cm" if view.units == "cm" else "Sin escala calibrada: unidades en px"]
+    if view.from_roi:
+        partes.append("ejes desde la esquina inferior izquierda del ROI")
+        if ctx.xy_origin is not None and ctx.frame_size is not None and ctx.roi_box is not None:
+            x0, y0, w0, h0 = ctx.roi_box
+            dx = (x0 - ctx.xy_origin[0]) * view.k
+            dy = (ctx.xy_origin[1] - (y0 + h0)) * view.k
+            partes.append(f"en el CSV: x_rel = x {_signed(dx)}, y_rel = y {_signed(dy)} {view.units}")
+    elif view.relative:
+        partes.append("ejes relativos al origen XY calibrado (iguales al CSV)")
+    else:
+        partes.append("ejes en coordenadas de la imagen (sin ROI): se ajustan al recorrido")
+    return " | ".join(partes)
 
 
 def _set_limits(ax, view: _View, x_range, y_range) -> None:
@@ -173,7 +205,8 @@ def _render_heatmap(records, dt, ctx: PlotContext, bin_cm: float, sigma_cm: floa
     if m.n_outside:
         nota += f" | {m.n_outside} puntos fuera de la cuadrícula"
     fig.text(0.5, 0.012, nota, ha="center", fontsize=8, color="0.35")
-    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.text(0.5, 0.034, _calibration_note(ctx, view), ha="center", fontsize=8, color="0.35")
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
     return fig
 
 
@@ -205,7 +238,8 @@ def _render_trajectory(records, ctx: PlotContext, exp_name: str = ""):
     if lost:
         fig.text(0.5, 0.012, f"{lost} frames con el sujeto perdido (la línea se interrumpe en esos huecos)",
                  ha="center", fontsize=8, color="0.35")
-    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.text(0.5, 0.034, _calibration_note(ctx, view), ha="center", fontsize=8, color="0.35")
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
     return fig
 
 

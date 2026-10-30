@@ -57,6 +57,7 @@ class Nada(Reacquirer):
         return None
 
 
+# ======================================================================
 class OpcionesRegistradasPorElPipelineTests(unittest.TestCase):
     def test_valores_por_defecto(self):
         s = TP.run_script([100, 110, 120]).settings
@@ -99,6 +100,46 @@ class OpcionesRegistradasPorElPipelineTests(unittest.TestCase):
             self.assertEqual((s["modo_seguimiento"], s["seleccion_independiente_del_margen"]), ("silueta", aware))
 
 
+
+# ======================================================================
+class CalibracionEnElResumenTests(unittest.TestCase):
+    """El resumen dice con qué escala, origen y ROI se midió: sin eso las unidades no se pueden interpretar."""
+
+    def test_el_pipeline_guarda_la_calibracion_usada(self):
+        s = TP.run_script([100, 110, 120], cm_per_px=0.05, xy_origin=(10.0, 290.0)).settings
+        self.assertEqual(s["escala_cm_por_px"], 0.05)
+        self.assertEqual(s["origen_xy_px"], [10.0, 290.0])  # listas: se guardan en JSON y deben salir idénticas
+        self.assertEqual(s["roi_box"][:3], [0, 0, 4000])
+        import json
+        self.assertEqual(json.loads(json.dumps(s)), s)  # ida y vuelta por JSON sin cambios
+        self.assertEqual(s["video_tamano_px"][0], 4000)
+
+    def test_filas_con_escala_y_origen(self):
+        d = dict_rows(provenance_rows(TP.run_script([100, 110, 120], cm_per_px=0.05, xy_origin=(10.0, 290.0)), "1.0"))
+        self.assertEqual(d["calibracion_escala_cm_por_px"], "0.050000")
+        self.assertEqual(d["calibracion_escala_px_por_cm"], "20.0000")  # 1 / 0.05
+        self.assertEqual(d["calibracion_origen_xy_px"], "10, 290")
+        self.assertTrue(d["calibracion_roi_x0_y0_ancho_alto_px"].startswith("0, 0, 4000, "))
+        self.assertTrue(d["calibracion_video_ancho_alto_px"].startswith("4000, "))
+
+    def test_la_escala_inversa_es_consistente_con_la_directa(self):
+        for cm in (0.0731, 0.5, 1.0, 0.012):
+            d = dict_rows(provenance_rows(TP.run_script([100, 110], cm_per_px=cm), "1.0"))
+            self.assertAlmostEqual(float(d["calibracion_escala_cm_por_px"]) * float(d["calibracion_escala_px_por_cm"]), 1.0, places=2)
+
+    def test_sin_escala_ni_origen_se_dice_en_lugar_de_dejar_celdas_ambiguas(self):
+        d = dict_rows(provenance_rows(TP.run_script([100, 110, 120]), "1.0"))
+        self.assertEqual(d["calibracion_escala_cm_por_px"], "sin escala (resultados en píxeles)")
+        self.assertEqual(d["calibracion_escala_px_por_cm"], "")
+        self.assertEqual(d["calibracion_origen_xy_px"], "no definido")
+
+    def test_resultado_de_una_version_anterior_dice_que_no_se_registro(self):
+        res = SimpleNamespace(frames_reacquired=0, records=[], timing=None, settings={"modo_seguimiento": "fondo"})
+        d = dict_rows(provenance_rows(res, "1.0"))
+        self.assertEqual(d["calibracion"], "no registrada")
+        self.assertNotIn("calibracion_escala_cm_por_px", d)
+
+# ======================================================================
 class FilasDeProcedenciaTests(unittest.TestCase):
     def resultado(self, **kw):
         res = TP.run_script([100, 110, None, None, None, 120, 130], **kw)
@@ -106,12 +147,14 @@ class FilasDeProcedenciaTests(unittest.TestCase):
 
     def test_orden_y_etiquetas(self):
         etiquetas = [r[0] for r in provenance_rows(self.resultado(), "9.9")]
-        self.assertEqual(etiquetas[:14], [
+        self.assertEqual(etiquetas[:19], [
             "trackerlab_version", "proc_modo_seguimiento", "proc_suavizado_alpha", "proc_salto_max_px", "proc_salto_max_vel_px_s",
             "proc_recuperacion_tras_frames", "proc_recuperacion_distancia_px", "proc_adopcion_tras_s", "proc_busqueda_sujeto",
             "proc_busqueda_tras_frames", "proc_busqueda_cada_frames", "proc_seleccion_independiente_del_margen",
+            "calibracion_escala_cm_por_px", "calibracion_escala_px_por_cm", "calibracion_origen_xy_px",
+            "calibracion_roi_x0_y0_ancho_alto_px", "calibracion_video_ancho_alto_px",
             "proc_frames_reencontrados", "calidad_veredicto"])
-        self.assertEqual(etiquetas[14:], [e for e in etiquetas if e.startswith("calidad_")][1:])
+        self.assertEqual(etiquetas[19:], [e for e in etiquetas if e.startswith("calidad_")][1:])
 
     def test_valores_y_formato(self):
         d = dict_rows(provenance_rows(self.resultado(), "9.9"))
@@ -168,9 +211,9 @@ class FilasDeProcedenciaTests(unittest.TestCase):
         etiquetas = [r[0] for r in provenance_rows(self.resultado(), "1.0")]
         self.assertEqual(len(etiquetas), len(set(etiquetas)))
         for e in etiquetas:
-            self.assertTrue(e.startswith(("trackerlab_", "proc_", "calidad_")), msg=e)
+            self.assertTrue(e.startswith(("trackerlab_", "proc_", "calibracion_", "calidad_")), msg=e)
         self.assertFalse(set(etiquetas) & set(BASE_LABELS))
-        for zona in ("proc", "calidad", "trackerlab", "A", "zona_1"):  # ni siquiera con zonas de nombres raros
+        for zona in ("proc", "calidad", "calibracion", "trackerlab", "A", "zona_1"):  # ni siquiera con zonas de nombres raros
             self.assertFalse(set(etiquetas) & {f"{zona}_{suf}" for suf in ZONE_SUFFIXES}, msg=zona)
 
     def test_solo_agrega_no_modifica(self):
@@ -181,6 +224,7 @@ class FilasDeProcedenciaTests(unittest.TestCase):
         self.assertGreater(len(base), 2)
 
 
+# ======================================================================
 class IntegracionConExportTrackingCsvTests(unittest.TestCase):
     """Ejecuta la export_tracking_csv REAL de main.py (extraída del archivo) sobre un resultado real."""
 
@@ -256,6 +300,7 @@ class IntegracionConExportTrackingCsvTests(unittest.TestCase):
     def test_ninguna_etiqueta_se_repite(self):
         etiquetas = [r[0] for r in self.rows[1:]]
         self.assertEqual(len(etiquetas), len(set(etiquetas)))
+
 
 if __name__ == "__main__":
     unittest.main()

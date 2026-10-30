@@ -15,6 +15,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from stats.eda import generate_eda
+from stats.heatmap import PlotContext
+from stats.report_info import calibration_lines, report_pages
 from persistence.experiment_config import (
 
     experiment_dir,
@@ -141,7 +143,7 @@ from learning.session import DatasetSession
 
 SILHOUETTE_BORDER_AWARE = True
 SILHOUETTE_REACQUIRE = True
-COLLECT_DATASET = False
+COLLECT_DATASET = True
 
 # Interruptor
 SAVE_RUN_INPUTS = True
@@ -1772,39 +1774,23 @@ def generate_final_report(
         lines = [
 
             f"Experimento: {exp_name}",
-
             f"Video: {os.path.basename(video_path)}",
-
             "",
-
+            calibration_lines(result)[0],
             "SEGUIMIENTO",
-
             f"Frames procesados: {processed}",
-
             f"Frames detectados: {detected}",
-
             f"Frames perdidos: {lost}",
-
             f"Seguimiento exitoso: {success:.2f} %",
-
             f"Duración analizada: {duration_s:.2f} s",
-
             "",
-
             "MOVIMIENTO",
-
             f"Distancia total: {distance_text}",
-
             f"Velocidad media: {speed_text}",
-
             f"Aceleración media: {acceleration_text}",
-
             f"Velocidad angular media: {angular_text}",
-
             "",
-
             "ZONAS"
-
         ]
 
         for zone in result.zones:
@@ -1906,6 +1892,9 @@ def generate_final_report(
             fig
 
         )
+
+        for page in report_pages(result):
+            pdf.savefig(page, bbox_inches="tight")
 
         image_pages = [
 
@@ -2994,11 +2983,9 @@ def main():
             exp_name
         )
 
-        eda_results = generate_eda(
-            result,
-            exp_folder,
-            exp_name
-        )
+        eda_results = generate_eda(result, exp_folder, exp_name,
+            context=PlotContext(cm_per_px=cm_per_px, frame_size=(reader.width, reader.height),
+                                roi_box=roi_box, xy_origin=xy_origin, zones=zones))
 
         print()
         print("EDA generado:")

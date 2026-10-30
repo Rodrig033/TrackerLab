@@ -284,15 +284,144 @@ class FigurasTests(unittest.TestCase):
         self.assertIn("9.7 s", textos)
 
 
+# Código que se ejecuta en un proceso NUEVO (un intérprete limpio, sin nada importado de antes).
+# Un "espía" en sys.meta_path anota QUIÉN importa matplotlib.pyplot por primera vez.
+_ESPIA = r"""
+import sys, traceback
+class Espia:
+    visto = None
+    def find_spec(self, name, path=None, target=None):
+        if name == "matplotlib.pyplot" and Espia.visto is None:
+            Espia.visto = "".join(l for l in traceback.format_stack() if ROOT in l and "<espia>" not in l)
+        return None
+sys.meta_path.insert(0, Espia())
+"""
+
+
+def _correr(codigo):
+    espia = _ESPIA.replace("ROOT", repr(ROOT))
+    out = subprocess.run([sys.executable, "-c", espia + codigo], cwd=ROOT, capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": ROOT})
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
 @unittest.skipUnless(HAVE_MPL, "requiere matplotlib")
+@unittest.skipUnless(HAVE_MPL, "requiere matplotlib")
+class EjesDelMapaTests(unittest.TestCase):
+    """Los ejes se leen sin adivinar: 0 en la esquina del ROI, y la figura dice la escala y la referencia."""
+
+    FRAME = (400, 300)
+    ROI = (60, 40, 280, 200)  # x0, y0, ancho, alto (imagen, y hacia abajo)
+    ORIGEN = (20.0, 270.0)  # origen XY calibrado (imagen)
+
+    def ctx(self, **kw):
+        base = dict(cm_per_px=0.5, frame_size=self.FRAME, roi_box=self.ROI, xy_origin=self.ORIGEN)
+        base.update(kw)
+        return PlotContext(**base)
+
+    @staticmethod
+    def textos(fig):
+        return " ".join(t.get_text() for t in fig.texts)
+
+    def test_por_defecto_los_ejes_arrancan_en_cero_y_abarcan_el_roi(self):
+        fig = H._render_heatmap(walk(), DT, self.ctx(), 1.0, 1.5)
+        ax = fig.axes[0]
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        self.assertAlmostEqual(x0, 0.0)
+        self.assertAlmostEqual(y0, 0.0)
+        self.assertAlmostEqual(x1, 280 * 0.5)
+        self.assertAlmostEqual(y1, 200 * 0.5)
+
+    def test_la_trayectoria_tambien_arranca_en_cero(self):
+        ax = H._render_trajectory(walk(), self.ctx()).axes[0]
+        self.assertAlmostEqual(ax.get_xlim()[0], 0.0)
+        self.assertAlmostEqual(ax.get_ylim()[0], 0.0)
+
+    def test_sin_el_cambio_los_ejes_no_dependian_del_origen_pero_si_del_recorrido(self):
+        """Reproduce lo que se veía: sin contexto los ejes arrancan en el mínimo del recorrido menos un margen."""
+        regs = walk()
+        xs, ys = H.detected_points(regs)
+        ctx = PlotContext()
+        (xa, _), (ya, _) = H._extent_px(ctx, xs, ys)
+        self.assertAlmostEqual(xa, xs.min() - max(0.05 * np.ptp(xs), 5.0))
+        self.assertGreater(xa, 0.0)  # no arranca en 0: ese era el "65" y el "25"
+        self.assertGreater(ya, 0.0)
+
+    def test_el_desplazamiento_de_la_nota_reproduce_las_columnas_del_csv(self):
+        """Independiente: se parsea la nota y se compara con x_rel / y_rel calculados como el pipeline."""
+        import re
+
+        for cm, origen in ((0.5, (20.0, 270.0)), (0.0731, (23.7, 268.2)), (1.0, (0.0, 300.0))):
+            ctx = self.ctx(cm_per_px=cm, xy_origin=origen)
+            v = H._make_view(ctx, walk())
+            m = re.search(r"x_rel = x ([+−]) ([0-9.]+), y_rel = y ([+−]) ([0-9.]+)", H._calibration_note(ctx, v))
+            self.assertIsNotNone(m, H._calibration_note(ctx, v))
+            dx = (1 if m.group(1) == "+" else -1) * float(m.group(2))
+            dy = (1 if m.group(3) == "+" else -1) * float(m.group(4))
+            alto = self.FRAME[1]
+            for cx, cy_up in ((80.0, 70.0), (200.0, 150.0), (330.0, 250.0)):
+                x_csv = (cx - origen[0]) * cm  # x_rel del CSV, en cm
+                y_csv = (origen[1] - (alto - cy_up)) * cm  # y_rel del CSV: oy - cy (cy de imagen)
+                self.assertAlmostEqual(v.x(cx) + dx, x_csv, places=2)
+                self.assertAlmostEqual(v.y(cy_up) + dy, y_csv, places=2)
+
+    def test_axes_origin_csv_conserva_las_coordenadas_del_csv(self):
+        ctx = self.ctx(axes_origin="csv")
+        v = H._make_view(ctx, walk())
+        self.assertTrue(v.relative)
+        self.assertFalse(v.from_roi)
+        self.assertAlmostEqual(v.x(200.0), (200.0 - self.ORIGEN[0]) * 0.5)
+        ax = H._render_heatmap(walk(), DT, ctx, 1.0, 1.5).axes[0]
+        self.assertAlmostEqual(ax.get_xlim()[0], (self.ROI[0] - self.ORIGEN[0]) * 0.5)  # ahora sí el desfase del origen
+
+    def test_axes_origin_invalido_falla(self):
+        with self.assertRaises(ValueError):
+            PlotContext(axes_origin="centro")
+
+    def test_sin_roi_no_se_puede_anclar_y_se_usa_el_origen_calibrado(self):
+        v = H._make_view(PlotContext(cm_per_px=0.5, xy_origin=self.ORIGEN, frame_size=self.FRAME), walk())
+        self.assertTrue(v.relative)
+        self.assertFalse(v.from_roi)
+
+    def test_la_figura_informa_la_escala_usada(self):
+        for fig in (H._render_heatmap(walk(), DT, self.ctx(), 1.0, 1.5), H._render_trajectory(walk(), self.ctx())):
+            t = self.textos(fig)
+            self.assertIn("Escala: 1 px = 0.5 cm", t)
+            self.assertIn("esquina inferior izquierda del ROI", t)
+
+    def test_sin_escala_la_figura_lo_dice(self):
+        t = self.textos(H._render_heatmap(walk(), DT, PlotContext(roi_box=self.ROI, frame_size=self.FRAME), 1.0, 1.5))
+        self.assertIn("Sin escala calibrada", t)
+        self.assertNotIn("Escala: 1 px", t)
+
+    def test_sin_roi_la_figura_avisa_que_los_ejes_se_ajustan_al_recorrido(self):
+        t = self.textos(H._render_trajectory(walk(), PlotContext()))
+        self.assertIn("sin ROI", t)
+
+
 class SinEfectosGlobalesTests(unittest.TestCase):
-    def test_no_importa_pyplot_ni_cambia_el_backend(self):
-        codigo = ("import sys; import stats.heatmap; "
-                  "print('matplotlib.pyplot' in sys.modules)")
-        out = subprocess.run([sys.executable, "-c", codigo], cwd=ROOT, capture_output=True, text=True,
-                             env={**os.environ, "PYTHONPATH": ROOT})
-        self.assertEqual(out.returncode, 0, msg=out.stderr)
-        self.assertEqual(out.stdout.strip(), "False")
+    """El EDA no debe importar pyplot: carga una interfaz gráfica y fija el backend de TODO el proceso."""
+
+    def test_heatmap_py_no_importa_pyplot(self):
+        """Solo heatmap.py (cargado por ruta, sin ejecutar el __init__.py del paquete stats)."""
+        ruta = os.path.join(ROOT, "stats", "heatmap.py")
+        salida = _correr(
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('heatmap_aislado', {ruta!r})\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['heatmap_aislado'] = mod  # @dataclass busca el módulo en sys.modules al ejecutarse\n"
+            "spec.loader.exec_module(mod)\n"
+            "print(Espia.visto or 'OK')")
+        self.assertEqual(salida, "OK", msg=f"heatmap.py (o lo que importa) carga pyplot:\n{salida}")
+
+    def test_el_paquete_stats_no_importa_pyplot(self):
+        """Importar stats.heatmap ejecuta primero stats/__init__.py: nada de lo que este importe debe cargar pyplot."""
+        salida = _correr("import stats.heatmap\nprint(Espia.visto or 'OK')")
+        self.assertEqual(
+            salida, "OK",
+            msg="Importar stats.heatmap cargó matplotlib.pyplot. Quién lo importó (de arriba abajo):\n" + salida)
 
 
 @unittest.skipUnless(HAVE_MPL, "requiere matplotlib")
