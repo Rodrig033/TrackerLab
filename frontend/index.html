@@ -1,0 +1,751 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>TrackerLab Web | Análisis de comportamiento animal</title>
+
+    <link rel="stylesheet" href="/static/styles.css">
+
+    <!-- Módulo principal -->
+    <script src="/static/js/app.js" defer></script>
+
+    <!-- Módulos de funcionamiento -->
+    <script src="/static/js/video.js" defer></script>
+    <script src="/static/js/roi.js" defer></script>
+    <script src="/static/js/calibration.js" defer></script>
+    <script src="/static/js/tracking.js" defer></script>
+    <script src="/static/js/charts.js" defer></script>
+    <script src="/static/js/heatmap.js" defer></script>
+    <script src="/static/js/zones.js" defer></script>
+</head>
+
+<body>
+
+<div class="layout">
+
+    <!-- MENÚ LATERAL -->
+    <aside class="sidebar">
+
+        <div class="brand">
+            <span class="brand-icon">TL</span>
+
+            <div>
+                <h2>TrackerLab</h2>
+                <small>Laboratorio de análisis</small>
+            </div>
+        </div>
+
+        <nav>
+            <a href="#video" class="nav-link active">
+                Video
+            </a>
+
+            <a href="#roi" class="nav-link">
+                Región de interés
+            </a>
+
+            <a href="#animal" class="nav-link">
+                Posición del animal
+            </a>
+
+            <a href="#zonas" class="nav-link">
+                Zonas de análisis
+            </a>
+
+            <a href="#calibracion" class="nav-link">
+                Calibración
+            </a>
+
+            <a href="#deteccion" class="nav-link">
+                Detección
+            </a>
+
+            <a href="#seguimiento" class="nav-link">
+                Seguimiento
+            </a>
+
+            <a href="#resultados" class="nav-link">
+                Resultados
+            </a>
+
+            <a href="#canvasHeatmap" class="nav-link">
+                Mapa de calor
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <span
+                id="indicadorServidor"
+                class="status-dot">
+            </span>
+
+            <span id="textoServidor">
+                Comprobando servidor...
+            </span>
+        </div>
+
+    </aside>
+
+
+    <!-- CONTENIDO PRINCIPAL -->
+    <main class="main">
+
+        <header class="page-header">
+
+            <div>
+                <p class="eyebrow">
+                    PLATAFORMA DE ANÁLISIS
+                </p>
+
+                <h1>TrackerLab Web</h1>
+
+                <p class="subtitle">
+                    Seguimiento y análisis del movimiento animal
+                </p>
+            </div>
+
+            <span class="version">
+                Versión web
+            </span>
+
+        </header>
+
+
+        <!-- 1. VIDEO -->
+        <section id="video" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">01</span>
+                    <h2>Cargar video</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Selecciona el video del experimento
+                para comenzar el análisis.
+            </p>
+
+            <div class="upload-area">
+
+                <input
+                    type="file"
+                    id="archivo"
+                    accept=".mp4,.avi,.mov,.mkv"
+                >
+
+                <button
+                    type="button"
+                    id="subirVideo"
+                    class="btn primary">
+                    Cargar video
+                </button>
+
+            </div>
+
+            <p id="mensajeVideo" class="message"></p>
+
+            <p
+                id="informacionVideo"
+                class="video-info">
+            </p>
+
+
+            <!-- VISOR DEL VIDEO -->
+            <div class="video-stage">
+
+                <div
+                    id="contenedorVideo"
+                    class="video-container">
+
+                    <img
+                        id="imagen"
+                        alt="Fotograma del experimento"
+                    >
+
+                    <canvas id="roiCanvas"></canvas>
+
+                </div>
+
+                <p
+                    id="videoPlaceholder"
+                    class="placeholder">
+                    Carga un video para visualizarlo aquí.
+                </p>
+
+            </div>
+
+
+            <!-- CONTROL DE FOTOGRAMAS -->
+            <div class="frame-control">
+
+                <div class="row-between">
+
+                    <label for="slider">
+                        Explorar fotogramas
+                    </label>
+
+                    <span>
+                        Frame:
+                        <strong id="numeroFrame">0</strong>
+                    </span>
+
+                </div>
+
+                <input
+                    type="range"
+                    id="slider"
+                    min="0"
+                    max="0"
+                    value="0"
+                    step="1"
+                >
+
+            </div>
+
+        </section>
+
+
+        <!-- 2. ROI -->
+        <section id="roi" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">02</span>
+                    <h2>Región de interés (ROI)</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Marca los puntos que delimitan
+                el área donde se encuentra el animal.
+                Necesitas al menos tres puntos.
+            </p>
+
+            <div class="button-row">
+
+                <button
+                    type="button"
+                    id="modoRoi"
+                    class="btn primary">
+                    Marcar ROI
+                </button>
+
+                <button
+                    type="button"
+                    id="deshacer"
+                    class="btn">
+                    Deshacer punto
+                </button>
+
+                <button
+                    type="button"
+                    id="limpiar"
+                    class="btn">
+                    Limpiar ROI
+                </button>
+
+                <button
+                    type="button"
+                    id="guardarRoi"
+                    class="btn success">
+                    Guardar ROI
+                </button>
+
+            </div>
+
+            <p id="mensajeRoi" class="message"></p>
+
+        </section>
+
+
+        <!-- 3. POSICIÓN DEL ANIMAL -->
+        <section id="animal" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">03</span>
+                    <h2>Posición inicial del animal</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Selecciona el fotograma inicial del
+                experimento y marca el centro del animal.
+            </p>
+
+            <div class="button-row">
+
+                <button
+                    type="button"
+                    id="modoAnimal"
+                    class="btn primary">
+                    Seleccionar animal
+                </button>
+
+                <button
+                    type="button"
+                    id="quitarAnimal"
+                    class="btn">
+                    Quitar selección
+                </button>
+
+            </div>
+
+            <p
+                id="posicionAnimal"
+                class="message">
+                Animal no seleccionado.
+            </p>
+
+        </section>
+
+
+        <!--
+            ZONAS DE ANÁLISIS
+
+            Esta sección se genera automáticamente
+            mediante frontend/js/zones.js.
+
+            No se agrega manualmente aquí para
+            evitar duplicados.
+        -->
+
+
+        <!-- 4. CALIBRACIÓN -->
+        <section id="calibracion" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">04</span>
+                    <h2>Calibración de detección</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Ajusta los parámetros para mejorar
+                la detección del animal.
+            </p>
+
+            <div class="fields">
+
+                <label for="diff">
+                    Diferencia (DIFF)
+                    <input
+                        id="diff"
+                        type="number"
+                        value="18"
+                        min="0"
+                        max="255"
+                    >
+                </label>
+
+                <label for="open">
+                    Apertura (OPEN)
+                    <input
+                        id="open"
+                        type="number"
+                        value="5"
+                        min="1"
+                    >
+                </label>
+
+                <label for="close">
+                    Cierre (CLOSE)
+                    <input
+                        id="close"
+                        type="number"
+                        value="9"
+                        min="1"
+                    >
+                </label>
+
+                <label for="mina">
+                    Área mínima (MINA)
+                    <input
+                        id="mina"
+                        type="number"
+                        value="200"
+                        min="1"
+                    >
+                </label>
+
+                <label for="maxa">
+                    Área máxima (MAXA)
+                    <input
+                        id="maxa"
+                        type="number"
+                        value="80000"
+                        min="1"
+                    >
+                </label>
+
+                <label for="shrink">
+                    Reducción (SHRINK)
+                    <input
+                        id="shrink"
+                        type="number"
+                        value="0"
+                        min="0"
+                    >
+                </label>
+
+                <label for="sol">
+                    Solidez (SOL)
+                    <input
+                        id="sol"
+                        type="number"
+                        value="0.55"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                    >
+                </label>
+
+            </div>
+
+            <button
+                type="button"
+                id="guardarCalibracion"
+                class="btn success">
+                Guardar calibración
+            </button>
+
+            <p
+                id="mensajeCalibracion"
+                class="message">
+            </p>
+
+        </section>
+
+
+        <!-- 5. DETECCIÓN -->
+        <section id="deteccion" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">05</span>
+                    <h2>Prueba de detección</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Comprueba si el sistema reconoce
+                correctamente al animal.
+            </p>
+
+            <button
+                type="button"
+                id="probarDeteccion"
+                class="btn primary">
+                Probar detección
+            </button>
+
+            <p
+                id="mensajeDeteccion"
+                class="message">
+            </p>
+
+            <div
+                id="resultadoDeteccion"
+                class="detection-grid hidden">
+
+                <div>
+                    <h3>Detección del animal</h3>
+
+                    <img
+                        id="imagenDeteccion"
+                        alt="Resultado de la detección"
+                    >
+                </div>
+
+                <div>
+                    <h3>Máscara binaria</h3>
+
+                    <img
+                        id="imagenMascara"
+                        alt="Máscara binaria"
+                    >
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- 6. SEGUIMIENTO -->
+        <section id="seguimiento" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">06</span>
+                    <h2>Seguimiento automático</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Selecciona el intervalo de fotogramas
+                que deseas analizar.
+            </p>
+
+            <div class="fields">
+
+                <label for="inicioTracking">
+                    Fotograma inicial
+
+                    <input
+                        id="inicioTracking"
+                        type="number"
+                        value="0"
+                        min="0"
+                    >
+                </label>
+
+                <label for="finTracking">
+                    Fotograma final
+
+                    <input
+                        id="finTracking"
+                        type="number"
+                        value="0"
+                        min="0"
+                    >
+                </label>
+
+                <label for="saltoTracking">
+                    Salto entre fotogramas
+
+                    <input
+                        id="saltoTracking"
+                        type="number"
+                        value="1"
+                        min="1"
+                    >
+                </label>
+
+            </div>
+
+            <div class="button-row">
+
+                <button
+                    type="button"
+                    id="iniciarTracking"
+                    class="btn primary">
+                    Iniciar seguimiento
+                </button>
+
+                <button
+                    type="button"
+                    id="detenerTracking"
+                    class="btn danger"
+                    disabled>
+                    Detener seguimiento
+                </button>
+
+            </div>
+
+            <div class="progress-panel">
+
+                <div class="row-between">
+
+                    <span id="estadoTracking">
+                        Sin iniciar
+                    </span>
+
+                    <strong id="porcentajeTracking">
+                        0%
+                    </strong>
+
+                </div>
+
+                <progress
+                    id="progresoTracking"
+                    value="0"
+                    max="100">
+                </progress>
+
+            </div>
+
+        </section>
+
+
+        <!-- 7. RESULTADOS -->
+        <section id="resultados" class="panel">
+
+            <div class="section-heading">
+                <div>
+                    <span class="step">07</span>
+                    <h2>Resultados del experimento</h2>
+                </div>
+            </div>
+
+            <p class="help">
+                Consulta las métricas, la trayectoria
+                y las gráficas obtenidas del seguimiento.
+            </p>
+
+
+            <!-- TARJETAS DE MÉTRICAS -->
+            <div class="stats">
+
+                <div class="stat">
+                    <span>Frames procesados</span>
+                    <strong id="framesProcesados">0</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Frames detectados</span>
+                    <strong id="framesDetectados">0</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Frames rechazados</span>
+                    <strong id="framesRechazados">0</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Frames recuperados</span>
+                    <strong id="framesRecuperados">0</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Tiempo analizado</span>
+                    <strong id="tiempoAnalizado">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Porcentaje de detección</span>
+                    <strong id="porcentajeDeteccion">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Distancia recorrida</span>
+                    <strong id="distanciaTotal">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Velocidad promedio</span>
+                    <strong id="velocidadPromedio">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Aceleración promedio</span>
+                    <strong id="aceleracionPromedio">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Ángulo promedio</span>
+                    <strong id="anguloPromedio">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Velocidad angular</span>
+                    <strong id="velocidadAngular">—</strong>
+                </div>
+
+                <div class="stat">
+                    <span>Tiempo válido</span>
+                    <strong id="tiempoValido">—</strong>
+                </div>
+
+            </div>
+
+
+            <!-- TRAYECTORIA -->
+            <div class="chart-panel">
+
+                <h3>Trayectoria del animal</h3>
+
+                <p class="help">
+                    El punto amarillo indica el inicio
+                    y el rojo la última posición detectada.
+                </p>
+
+                <canvas
+                    id="canvasTrayectoria"
+                    width="800"
+                    height="450">
+                </canvas>
+
+                <!--
+                    El control de grosor se agrega
+                    automáticamente desde charts.js.
+                -->
+
+            </div>
+
+
+            <!-- GRÁFICA DE VELOCIDAD -->
+            <div class="chart-panel">
+
+                <h3>Velocidad durante el experimento</h3>
+
+                <canvas
+                    id="graficaVelocidad"
+                    width="800"
+                    height="300">
+                </canvas>
+
+            </div>
+
+
+            <!-- GRÁFICA DE DISTANCIA -->
+            <div class="chart-panel">
+
+                <h3>Distancia acumulada</h3>
+
+                <canvas
+                    id="graficaDistancia"
+                    width="800"
+                    height="300">
+                </canvas>
+
+            </div>
+
+
+            <!--
+                MAPA DE CALOR
+
+                heatmap.js agrega aquí una nueva
+                sección con:
+
+                - Mapa de calor
+                - Ajuste del radio
+                - Intensidad
+                - Transparencia
+                - Selección del fondo
+            -->
+
+
+            <!-- MENSAJES Y EXPORTACIÓN -->
+            <p
+                id="mensajeResultados"
+                class="message">
+            </p>
+
+            <button
+                type="button"
+                id="descargarCSV"
+                class="btn success"
+                disabled>
+                Descargar resultados CSV
+            </button>
+
+        </section>
+
+
+        <!-- PIE DE PÁGINA -->
+        <footer>
+            TrackerLab Web · Sistema de seguimiento
+            y análisis de comportamiento animal
+        </footer>
+
+    </main>
+
+</div>
+
+</body>
+</html>
