@@ -1,32 +1,3 @@
-#!/usr/bin/env python3
-"""Elige frames de tus videos para ETIQUETAR A MANO un conjunto de validación del ratón.
-
-Uso (desde la raíz del proyecto):
-    python tools/sample_frames.py video1.mp4 video2.mp4 --salida validacion --por-video 20
-    python tools/sample_frames.py "carpeta_con_videos" --salida validacion --por-video 20
-    python tools/sample_frames.py --entradas "<carpeta entradas_...>" --salida validacion --por-video 20
-    python tools/sample_frames.py otro_video.mp4 --salida validacion --anadir
-
-Escribe, dentro de ``--salida``:
-    images/<video>_f<frame>.jpg   los frames elegidos (esto es lo que se etiqueta)
-    labels/                       aquí van las etiquetas YOLO (.txt, mismo nombre que la imagen)
-    manifest.json                 de qué video y frame viene cada imagen (lo usa tools/eval_tracking.py)
-    classes.txt                   una sola clase: raton
-    LEEME_ETIQUETADO.txt          la convención de etiquetado (léela antes de empezar)
-
-Decisiones de diseño (importan para que la medición sea honesta):
-  * Muestreo ESTRATIFICADO en el tiempo: el video se parte en tantos tramos como frames se piden y se elige
-    uno al azar en cada tramo. Cubre todo el video (el ratón quieto al principio, cruzando la arena, al final)
-    en vez de amontonar frames parecidos.
-  * Es CIEGO: no se dibuja ninguna caja sugerida. Si se corrigieran cajas del seguimiento clásico, quien
-    etiqueta tendería a aceptarlas y la validación favorecería al seguimiento que se quiere medir.
-  * Con ``--entradas`` se usan el rango y el ``frame_step`` de esa corrida: así TODOS los frames elegidos
-    son frames que el pipeline procesa y se pueden comparar uno a uno. Sin ``--entradas``, ``--paso`` hace lo mismo.
-  * Reproducible: la misma semilla y el mismo video dan los mismos frames, y agregar videos no cambia los de los demás.
-
-Código de salida: 0 = bien, 2 = no se pudo generar nada.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -221,8 +192,8 @@ def muestrear(
             out(f"AVISO: no se encuentra {f.video}; se omite.")
             continue
         huella = video_fingerprint(f.video)
-        if huella["sha256_extremos"] in huellas_hechas and anadir:
-            out(f"  {nombre}: ya estaba en el manifiesto; se omite.")
+        if huella["sha256_extremos"] in huellas_hechas:  # ya en el manifiesto, o repetido en esta misma llamada
+            out(f"  {nombre}: ese video ya está en el conjunto (o lo pasaste dos veces); se omite.")
             continue
         try:
             reader = VideoReader(f.video)
@@ -234,18 +205,24 @@ def muestrear(
             vid = _unique_id(safe_stem(f.video), ids_huella, huella["sha256_extremos"])
             rng = random.Random(f"{semilla}:{huella['sha256_extremos']}:{start}:{end}:{f.step}")
             plan = plan_frames(start, end, f.step, por_video, rng)
+            quiero = set(plan)
             hechos: List[int] = []
+            # Se leen DE CORRIDO, con la misma lectura que usa el pipeline (iter_frames). Un salto con read_at puede
+            # caer unos frames fuera de lugar en algunos códecs (mp4): la imagen etiquetada sería de otro instante que
+            # el frame que procesa el seguimiento, y la evaluación mediría un desfase en vez del seguimiento.
+            if plan:
+                for idx, frame in reader.iter_frames(start, max(plan), f.step):
+                    if idx not in quiero:
+                        continue
+                    ruta = os.path.join(salida, "images", image_name(vid, idx, formato))
+                    ok = cv2.imwrite(ruta, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95] if formato == "jpg" else [])
+                    if not ok:
+                        out(f"  AVISO: no se pudo guardar {ruta}.")
+                        continue
+                    hechos.append(idx)
             for idx in plan:
-                frame = reader.read_at(idx)
-                if frame is None:
+                if idx not in hechos:
                     out(f"  AVISO: no se pudo leer el frame {idx} de {nombre}; se omite.")
-                    continue
-                ruta = os.path.join(salida, "images", image_name(vid, idx, formato))
-                ok = cv2.imwrite(ruta, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95] if formato == "jpg" else [])
-                if not ok:
-                    out(f"  AVISO: no se pudo guardar {ruta}.")
-                    continue
-                hechos.append(idx)
             if not hechos:
                 out(f"AVISO: {nombre}: no se generó ninguna imagen.")
                 continue

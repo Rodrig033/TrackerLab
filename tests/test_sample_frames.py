@@ -10,6 +10,7 @@ import os
 import random
 import tempfile
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -60,6 +61,8 @@ def leer(path):
 def silencio(_):
     pass
 
+
+# ======================================================================
 class PlanDeFramesTests(unittest.TestCase):
     def test_alineado_dentro_del_rango_y_ordenado(self):
         for start, end, step, n in ((0, 99, 1, 10), (5, 205, 4, 12), (3, 50, 3, 7)):
@@ -114,6 +117,7 @@ class NombresTests(unittest.TestCase):
         self.assertEqual(S.image_name("rata01", 1234567, "png"), "rata01_f1234567.png")
 
 
+# ======================================================================
 class MuestreoTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -232,6 +236,81 @@ class MuestreoTests(unittest.TestCase):
         man = self.manifiesto(s)
         self.assertEqual([v["nombre"] for v in man["videos"]], ["uno.avi", "dos.avi"])  # uno.avi no se repite
         self.assertEqual(man["videos"][0], antes)
+
+    def test_el_mismo_video_dos_veces_en_una_llamada_se_muestrea_una_sola_vez(self):
+        """Dos corridas del mismo video (mismo experimento) no deben duplicarlo en el manifiesto."""
+        mensajes = []
+        s = self.salida("repetido")
+        rc = S.muestrear([S.Fuente(self.v1, step=1, desde="video|0.0|None"), S.Fuente(self.v1, step=2, desde="video|0.0|None")], s,
+                         por_video=10, formato="png", out=mensajes.append)
+        self.assertEqual(rc, 0)
+        man = self.manifiesto(s)
+        self.assertEqual(len(man["videos"]), 1)
+        self.assertEqual(len(man["videos"][0]["frames"]), 10)
+        self.assertEqual(len(os.listdir(os.path.join(s, "images"))), 10)
+        self.assertTrue(any("lo pasaste dos veces" in m for m in mensajes))
+        # la primera fuente es la que manda (su rejilla): paso 1
+        self.assertEqual(man["videos"][0]["paso"], 1)
+
+    def test_las_imagenes_son_las_que_entrega_la_lectura_del_pipeline_aunque_los_saltos_fallen(self):
+        """En un mp4, un SALTO (set POS_FRAMES) puede caer unos frames fuera de lugar y la lectura de corrido no.
+
+        Se imita con un lector cuyos saltos caen 3 frames más adelante. Lo que el seguimiento procesa viene de la
+        lectura de corrido (iter_frames), y las imágenes que se etiquetan deben ser exactamente esos frames.
+        """
+
+        class SaltoMalo(VideoReader):
+            def read_at(self, idx):
+                pos = self._pos
+                es_salto = not (pos is not None and 0 <= idx - pos <= self.skip_limit)
+                return super().read_at(idx + 3 if es_salto else idx)
+
+        with SaltoMalo(self.v1) as rd:
+            self.assertEqual(indice_de(rd.read_at(80)), 83)  # el lector de prueba de verdad falla en los saltos
+        with SaltoMalo(self.v1) as rd:
+            lo_que_procesa_el_pipeline = {i: indice_de(f) for i, f in rd.iter_frames(0, 119, 1)}
+        self.assertEqual(lo_que_procesa_el_pipeline[80], 80)  # y la lectura de corrido no
+
+        with mock.patch.object(S, "VideoReader", SaltoMalo):
+            rc, s = self.correr("salto_malo", [self.v1], por_video=12)
+        self.assertEqual(rc, 0)
+        v = self.manifiesto(s)["videos"][0]
+        self.assertEqual(len(v["frames"]), 12)
+        for f in v["frames"]:
+            img = cv2.imread(os.path.join(s, "images", S.image_name(v["id"], f, "png")))
+            self.assertEqual(indice_de(img), lo_que_procesa_el_pipeline[f], msg=f"el frame {f} guardado no es el que procesa el pipeline")
+
+    def test_no_lee_mas_alla_del_ultimo_frame_elegido(self):
+        leidos = []
+
+        class Espia(VideoReader):
+            def iter_frames(self, start=0, end=None, step=1):
+                for idx, fr in super().iter_frames(start, end, step):
+                    leidos.append(idx)
+                    yield idx, fr
+
+        with mock.patch.object(S, "VideoReader", Espia):
+            _, s = self.correr("espia", [self.v1], por_video=5)
+        frames = self.manifiesto(s)["videos"][0]["frames"]
+        self.assertEqual(max(leidos), max(frames))  # se detiene al guardar el último, no decodifica todo el video
+
+    def test_si_la_lectura_se_corta_avisa_de_los_frames_que_faltan(self):
+        class SeCorta(VideoReader):
+            def iter_frames(self, start=0, end=None, step=1):
+                for idx, fr in super().iter_frames(start, end, step):
+                    if idx > 60:
+                        return
+                    yield idx, fr
+
+        mensajes = []
+        s = self.salida("corta")
+        with mock.patch.object(S, "VideoReader", SeCorta):
+            rc = S.muestrear([S.Fuente(self.v1, desde="video|0.0|None")], s, por_video=10, formato="png", out=mensajes.append)
+        self.assertEqual(rc, 0)
+        frames = self.manifiesto(s)["videos"][0]["frames"]
+        self.assertTrue(all(f <= 60 for f in frames))
+        self.assertTrue(any("no se pudo leer el frame" in m for m in mensajes))
+        self.assertEqual(len(os.listdir(os.path.join(s, "images"))), len(frames))  # el manifiesto no promete imágenes que no hay
 
     def test_sobrescribir_no_borra_las_etiquetas(self):
         _, s = self.correr("etiquetas", [self.v1])
