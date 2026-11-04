@@ -1,32 +1,3 @@
-#!/usr/bin/env python3
-"""Mide qué tan bien sigue TrackerLab al ratón, comparando contra frames ETIQUETADOS A MANO.
-
-Uso (desde la raíz del proyecto):
-    python tools/eval_tracking.py validacion --entradas "<carpeta entradas_...>"
-    python tools/eval_tracking.py validacion --entradas "<entradas fondo>" --entradas "<entradas silueta>" --entradas "<entradas color>"
-    python tools/eval_tracking.py validacion --entradas "<entradas_...>" --sin-filtros
-
-``validacion`` es la carpeta que creó tools/sample_frames.py, con tus etiquetas YOLO dentro de labels/.
-Cada ``--entradas`` es la carpeta ``entradas_<fecha>`` de una corrida normal de la aplicación (el modo, el ROI, la
-ventana del sujeto... ya están ahí). Se repite esa corrida sin ventanas y se mira dónde dijo que estaba el ratón en
-los frames etiquetados. Si das varias corridas del mismo video con distintos modos, la tabla los compara.
-
-Qué se mide (por corrida, por modo y en total):
-  * Acierto (IoU): la CAJA del tracker se solapa con la etiquetada al menos ``--iou`` (0.5 por omisión).
-    Depende de la convención de la caja (por ejemplo, con o sin cola).
-  * Posición dentro de la caja: la posición que queda en el CSV (con suavizado y rechazo de saltos) cae dentro
-    de la caja etiquetada. Es la medida que más se parece a lo que usa un investigador y no depende de los bordes.
-  * Error del centro: distancia (px, y cm si hay escala) entre esa posición y el centro de la caja etiquetada.
-  * Lugar equivocado: dio una posición, pero no era el ratón. Perdido: no dio nada y el ratón estaba.
-  * Falso positivo: dio una posición en una imagen que etiquetaste SIN ratón.
-Los frames que el pipeline no procesa (fuera del rango o saltados por frame_step) no se evalúan y se cuentan aparte.
-
-Escribe, en ``<validacion>/evaluacion_<fecha>/``: resultados.json, por_frame.csv y fallos.png (los peores casos, con la
-caja etiquetada en verde y la posición del tracker en rojo).
-
-Código de salida: 0 = evaluado, 2 = no se pudo evaluar.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -116,6 +87,7 @@ def collect_truths(valdir: str, manifest: Dict[str, Any], faltantes_sin_raton: b
             else:
                 info["invalidas"].append(stem)
     return truths, info
+
 
 # Evaluación (pura: no abre videos)
 @dataclass(frozen=True)
@@ -235,6 +207,38 @@ def predict_frames(carpeta: str, video_path: str, frames: Sequence[int], overrid
     return preds, meta
 
 
+def run_label(carpeta: str) -> str:
+    """Nombre legible de una corrida: el del EXPERIMENTO (la carpeta que contiene ``entradas_<fecha>``) o el de la propia carpeta.
+
+    ``.../SMR12408_roi_amplio/entradas_20261103_174940`` -> ``SMR12408_roi_amplio``; ``.../prueba_sol0`` -> ``prueba_sol0``.
+    """
+    carpeta = os.path.normpath(carpeta)
+    base = os.path.basename(carpeta)
+    if base.startswith("entradas_"):
+        padre = os.path.basename(os.path.dirname(carpeta))
+        return padre or base
+    return base
+
+
+def unique_labels(carpetas: Sequence[str]) -> List[str]:
+    """Un nombre distinto por corrida: si dos coinciden se añade la fecha de ``entradas_<fecha>``, y si aun así coinciden, un número."""
+    base = [run_label(c) for c in carpetas]
+    out: List[str] = []
+    for i, c in enumerate(carpetas):
+        nombre = base[i]
+        if base.count(nombre) > 1:
+            b = os.path.basename(os.path.normpath(c))
+            if b.startswith("entradas_"):
+                nombre = f"{nombre} ({b[len('entradas_'):]})"
+        out.append(nombre)
+    vistos: Dict[str, int] = {}
+    for i, nombre in enumerate(out):
+        vistos[nombre] = vistos.get(nombre, 0) + 1
+        if vistos[nombre] > 1:
+            out[i] = f"{nombre} #{vistos[nombre]}"
+    return out
+
+
 def match_video(manifest: Dict[str, Any], inputs_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """El video del manifiesto al que corresponde una corrida: por huella; si no hay, por nombre de archivo."""
     vid = inputs_data.get("video", {})
@@ -248,6 +252,7 @@ def match_video(manifest: Dict[str, Any], inputs_data: Dict[str, Any]) -> Option
         if v["nombre"] == nombre:
             return v
     return None
+
 
 
 # Salidas
@@ -267,7 +272,7 @@ def format_table(rows: List[Tuple[str, Dict[str, Any]]]) -> str:
 
 
 def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
-    cab = ["entradas", "modo", "video", "frame", "estado", "tiene_raton", "iou", "error_centro_px", "error_centro_rel",
+    cab = ["corrida", "entradas", "modo", "video", "frame", "estado", "tiene_raton", "iou", "error_centro_px", "error_centro_rel",
            "posicion_dentro", "caja_etiqueta", "caja_prediccion"]
 
     def c(v):
@@ -405,7 +410,12 @@ def run(valdir: str, entradas: Sequence[str], *, iou_thr: float = 0.5, salida: O
         out("No se pudo evaluar ninguna corrida.")
         return 2
 
-    tabla = [(f"{c['modo']} · {c['video'][:22]}", c["resumen"]) for c in corridas]
+    nombres = unique_labels([c["entradas"] for c in corridas])
+    for c, nombre in zip(corridas, nombres):
+        c["nombre"] = nombre
+        for r in c["_rows"]:
+            r["corrida"] = nombre
+    tabla = [(f"{c['nombre'][:30]} · {c['modo']}", c["resumen"]) for c in corridas]
     por_modo: Dict[str, List[List[Dict[str, Any]]]] = {}
     for c in corridas:
         por_modo.setdefault(c["modo"], []).append(c["_rows"])

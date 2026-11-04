@@ -9,9 +9,9 @@ import importlib
 import json
 import math
 import os
+import shutil
 import tempfile
 import unittest
-
 import cv2
 import numpy as np
 
@@ -216,6 +216,41 @@ class MetricasTests(unittest.TestCase):
         self.assertAlmostEqual(junto["error_centro_mediana_px"], esperado["error_centro_mediana_px"])
 
 
+class NombresDeCorridaTests(unittest.TestCase):
+    """Las filas de la tabla se reconocen por el nombre del experimento, no por el orden en que se pasaron."""
+
+    def test_run_label_usa_el_experimento_de_una_carpeta_entradas(self):
+        self.assertEqual(E.run_label("/r/SMR12408_roi_amplio/entradas_20261103_174940"), "SMR12408_roi_amplio")
+        self.assertEqual(E.run_label("/r/SMR12408/entradas_20261030_172422/"), "SMR12408")  # con barra final
+
+    def test_run_label_de_otra_carpeta_usa_su_propio_nombre(self):
+        self.assertEqual(E.run_label("/r/prueba_sol0"), "prueba_sol0")
+        self.assertEqual(E.run_label("/r/prueba_sol0/"), "prueba_sol0")
+
+    def test_run_label_sin_experimento_cae_en_la_propia_carpeta(self):
+        self.assertEqual(E.run_label("entradas_20261030_172422"), "entradas_20261030_172422")
+
+    def test_nombres_distintos_se_quedan_como_estan(self):
+        c = ["/r/SMR12408/entradas_20261030_172422", "/r/SMR12408_roi_amplio/entradas_20261103_174940", "/r/prueba_sol0"]
+        self.assertEqual(E.unique_labels(c), ["SMR12408", "SMR12408_roi_amplio", "prueba_sol0"])
+
+    def test_dos_corridas_del_mismo_experimento_se_distinguen_por_la_fecha(self):
+        c = ["/r/SMR12408/entradas_20261029_170820", "/r/SMR12408/entradas_20261030_170915", "/r/otro/entradas_20261030_170915"]
+        self.assertEqual(E.unique_labels(c), ["SMR12408 (20261029_170820)", "SMR12408 (20261030_170915)", "otro"])
+
+    def test_la_misma_carpeta_dos_veces_se_numera(self):
+        c = ["/r/exp/entradas_20261022_101500", "/r/exp/entradas_20261022_101500"]
+        self.assertEqual(E.unique_labels(c), ["exp (20261022_101500)", "exp (20261022_101500) #2"])
+
+    def test_carpetas_que_no_son_entradas_con_el_mismo_nombre_se_numeran(self):
+        self.assertEqual(E.unique_labels(["/a/prueba", "/b/prueba", "/c/prueba"]), ["prueba", "prueba #2", "prueba #3"])
+
+    def test_siempre_son_distintos(self):
+        c = ["/r/a/entradas_1", "/r/a/entradas_1", "/r/a/entradas_2", "/r/b", "/q/b", "/r/a/entradas_2"]
+        nombres = E.unique_labels(c)
+        self.assertEqual(len(set(nombres)), len(nombres))
+
+
 class SalidasTests(unittest.TestCase):
     def test_tabla(self):
         t, p = MetricasTests().datos()
@@ -414,6 +449,29 @@ class EscenaFacilTests(unittest.TestCase):
         self.assertEqual(len(res["corridas"]), 2)
         self.assertEqual(res["por_modo"]["fondo"]["evaluados"], 2 * len(v["frames"]))
         self.assertTrue(any(m.startswith("TOTAL fondo") or "TOTAL fondo" in m for m in mensajes))
+
+    def test_las_filas_de_la_tabla_el_csv_y_el_json_llevan_el_nombre_del_experimento(self):
+        val, v = self.preparar()
+        copia = os.path.join(self.tmp.name, "prueba_param")
+        if not os.path.exists(copia):
+            shutil.copytree(self.carpeta, copia)
+        mensajes = []
+        self.assertEqual(E.run(val, [self.carpeta, copia], sin_filtros=True, hoja_fallos=0, out=mensajes.append), 0)
+        filas_tabla = [m for m in "\n".join(mensajes).splitlines() if " · fondo" in m]
+        self.assertEqual([m.split(" · ")[0].strip() for m in filas_tabla][:2], ["exp", "prueba_param"])  # en el orden pedido
+        carpeta_res, res = self.resultados(val)
+        self.assertEqual([c["nombre"] for c in res["corridas"]], ["exp", "prueba_param"])
+        with open(os.path.join(carpeta_res, "por_frame.csv"), newline="", encoding="utf-8-sig") as fh:
+            filas = list(csv.DictReader(fh))
+        self.assertEqual(sorted({f["corrida"] for f in filas}), ["exp", "prueba_param"])
+        por_corrida = {n: sum(1 for f in filas if f["corrida"] == n) for n in ("exp", "prueba_param")}
+        self.assertEqual(por_corrida["exp"], por_corrida["prueba_param"])  # cada corrida aporta sus propias filas
+
+    def test_una_sola_corrida_tambien_muestra_su_nombre(self):
+        val, _ = self.preparar()
+        mensajes = []
+        E.run(val, [self.carpeta], sin_filtros=True, hoja_fallos=0, out=mensajes.append)
+        self.assertTrue(any(m.strip().startswith("exp · fondo") for m in "\n".join(mensajes).splitlines()))
 
     def test_una_corrida_de_otro_video_se_omite(self):
         val, _ = self.preparar()
