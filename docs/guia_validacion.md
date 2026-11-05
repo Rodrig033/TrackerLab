@@ -186,7 +186,109 @@ La primera fila es la advertencia: con imágenes mal alineadas, los resultados p
 
 ---
 
-## 9. Qué hace cada herramienta
+## 9. Muchos videos pesados: inventario y reparto de roles
+
+Con videos de 1 GB o más conviene trabajar así:
+
+- **No hace falta procesar los videos completos.** Para entrenar importa la *variedad*, no la cobertura. Elige entre 5 y 8 videos de sesiones distintas y, de cada uno, un tramo de unos minutos con el ratón activo (el rango que ya eliges en TrackerLab).
+- **Descarga solo los que vayas a usar, en tandas.** Cuando termine la corrida de un video puedes borrarlo de tu Mac: las carpetas `entradas_` y `dataset_` pesan poco, y lo que va a Colab es el conjunto ya recortado (decenas de MB), no los videos.
+- **Cuidado con Drive.** Abrir un video que solo existe «en la nube» puede descargarlo entero. Si no estás seguro de lo que tienes en el disco, empieza con `--sin-abrir`.
+
+**1. Primer vistazo, sin abrir ningún video** (solo nombre, tamaño y fecha). Para no escribir la ruta a mano, escribe `python tools/inventory_videos.py ` (con un espacio al final), arrastra la carpeta a la ventana de Terminal y agrega lo demás:
+
+```
+python tools/inventory_videos.py RUTA_DE_LA_CARPETA --sin-abrir --salida inventario
+```
+
+**2. Con los videos candidatos ya en tu disco** (una carpeta con los que vas a considerar):
+
+```
+python tools/inventory_videos.py RUTA_DE_LA_CARPETA --salida inventario
+```
+
+Lee de cada video solo los metadatos y 5 frames repartidos, no lo recorre. Deja `inventario/inventario.csv`, `inventario/hoja.png` (un cuadro por video, con su id y grupo) y `inventario/similitud.csv`. Avisa de los **duplicados** y de las **resoluciones o fps distintos**.
+
+**3. Reparte los roles por grupo, no por video.** `grupo_visual` junta los videos cuyo fondo es casi igual (misma arena y misma cámara). Los videos de un mismo grupo comparten fondo: si unos entrenan y otros validan, la validación sale optimista.
+
+| Rol | Qué videos | Regla |
+|---|---|---|
+| Entrenamiento | varios grupos, lo más variados posible | `--train` en el armado del conjunto |
+| Validación del entrenador | un grupo entero, distinto de los demás | `--valid` |
+| **Reservado** para la evaluación final | un grupo entero, distinto de los demás, con tus 20 etiquetas a mano | `--excluir-videos-de` |
+
+El agrupamiento es una ayuda, no una verdad. Si ves videos de la misma arena en grupos distintos (o arenas distintas juntas), ajusta `--umbral` (por omisión 0.9) y mira `hoja.png`. La «fecha» que muestra es la del archivo en tu disco: si lo bajaste de Drive puede ser la de la descarga y no la de la grabación.
+
+**Si todos los videos salen en un solo grupo** (misma arena y cámara), no hay separación por arena posible. Aun así separa por video (idealmente por día o por animal), y cuando reportes resultados dilo así: miden qué tan bien funciona el detector con grabaciones nuevas *en la misma configuración*, no en una configuración nueva.
+
+---
+
+## 10. Revisar las cajas automáticas
+
+Las cajas que deja el seguimiento clásico salen más angostas que las que dibujas tú y a veces incluyen parte de la cola. Si se entrena con ellas tal cual, el detector aprende esos defectos. Esta herramienta te muestra cada imagen **recortada al ROI y con zoom** (el ratón se ve grande) con la caja automática, y tú decides. Se hace una vez por cada video de entrenamiento, antes de armar el conjunto.
+
+```
+find /Users/farid/TrackerLab_Resultados -type d -name "dataset_*"
+python tools/review_boxes.py "/Users/farid/TrackerLab_Resultados/SMR12408_roi_amplio/dataset_20261103_174940"
+```
+
+| Tecla / acción | Qué hace |
+|---|---|
+| espacio o Enter | la caja está bien: aceptarla y pasar a la siguiente |
+| arrastrar el ratón | dibuja la caja correcta (reemplaza a la anterior); luego espacio para pasar a la siguiente |
+| `x` | no se ve el ratón o la caja no sirve: **descartar** y pasar a la siguiente |
+| `k` | dudosa (no se usará): pasar a la siguiente |
+| `u` | deshacer lo decidido en esta imagen (vuelve a la caja automática) |
+| `d` / `a` | siguiente / anterior, sin decidir nada |
+| `n` | próxima imagen pendiente |
+| `h` / `q` o ESC | ayuda / salir |
+
+Todo se guarda **al instante** en `revision.json`, dentro de la carpeta del conjunto. Si cierras de golpe no pierdes nada, y al volver a abrirlo continúa en la primera pendiente. Las etiquetas originales **no se modifican**. Si necesitas que la ventana reciba las teclas, haz clic sobre ella una vez.
+
+**El criterio, el mismo para todas:** caja ajustada al **cuerpo** visible del ratón, **sin la cola**. Ser consistente importa más que acertar al píxel: si unas veces la cola va dentro y otras fuera, el detector no puede aprender una regla. Si dudas si incluir un trozo de cola, déjalo fuera. Descarta (`x`) cuando no hay ratón o la caja está sobre otra cosa, y usa `k` si no estás seguro.
+
+**Cuánto se equivocó la caja automática** (sin abrir la ventana):
+
+```
+python tools/review_boxes.py "RUTA_DEL_DATASET" --solo-resumen
+```
+
+Imprime cuántas necesitaron corrección y, de esas, el IoU entre la caja automática y la tuya, y cuánto más ancha o alta quedó. Esa es la medida de cuánto sesga el seguimiento clásico.
+
+**Si el conjunto es grande,** no tienes que revisarlo todo: puedes parar y armar con `--solo-revisadas`. Ojo: las imágenes van en orden de frame, así que revisar solo las primeras cubre solo el inicio del tramo. Para un tramo corto (unos 3 minutos) salen unas 180 imágenes, que se revisan en unos 10 minutos.
+
+---
+
+## 11. Armar el conjunto de entrenamiento (detector RF-DETR)
+
+Es otro flujo, aparte de la validación: aquí se juntan las imágenes y cajas **automáticas** de varios videos para entrenar el detector. Para cada video: corre TrackerLab con `COLLECT_DATASET = True` (deja una carpeta `dataset_<fecha>` junto a `entradas_<fecha>`), siguiendo las reglas de la sección 1 (ROI holgado, ratón en movimiento).
+
+Reglas de este flujo:
+1. **El video que reservas para evaluar (el de tus etiquetas a mano) nunca entra al entrenamiento.** La herramienta lo comprueba por la huella del video y se niega a armar el conjunto si lo encuentra (`FUGA DE DATOS EVITADA`).
+2. **Se reparte por video, no por frame.** Unos videos entrenan y otro valida; si los frames de un mismo video se repartieran entre las dos, la validación saldría optimista.
+3. **Se recorta al ROI.** El generador guarda el frame completo y el ratón mide ~65 px; el detector se usará sobre el recorte del ROI, así que se entrena con ese mismo recorte.
+
+Localiza las carpetas y arma el conjunto (sustituye las rutas por las reales que imprima `find`, sin `<` `>`):
+
+```
+find /Users/farid/TrackerLab_Resultados -type d -name "dataset_*"
+python tools/build_training_set.py \
+  --train "/Users/farid/TrackerLab_Resultados/SMR12408_roi_amplio/dataset_20261103_174940" \
+  --valid "RUTA_DEL_DATASET_DE_OTRO_VIDEO" \
+  --excluir-videos-de "$VAL" \
+  --salida /Users/farid/TrackerLab_Resultados/entrenamiento
+```
+
+`--train` y `--valid` se pueden repetir (uno por video). Si un conjunto tiene `revision.json` (sección 10), se aplica solo: se usa la caja corregida y se dejan fuera las descartadas y dudosas. Opciones: `--solo-revisadas` (usar únicamente las aceptadas o corregidas), `--margen-roi N` (px extra alrededor del ROI; si lo usas, hay que usar el mismo margen al correr el detector), `--sin-recorte`, `--max-por-video N`, `--sobrescribir`.
+
+Escribe `data.yaml`, `train/` y `valid/` (cada uno con `images` y `labels`) y `conjunto_info.json` con el origen de cada imagen. Lee los `AVISO` que imprime:
+- Sin `--valid`, la validación sale de bloques del mismo video: sirve para probar que la tubería funciona, **no** para medir.
+- Las etiquetas son automáticas: heredan los errores del seguimiento y su caja más angosta.
+- El generador descarta los frames con la caja tocando el borde del ROI: casi no hay ratones pegados a la pared.
+- Solo hay imágenes con ratón (ninguna sin ratón).
+
+---
+
+## 12. Qué hace cada herramienta
 
 | Herramienta | Para qué |
 |---|---|
@@ -194,5 +296,8 @@ La primera fila es la advertencia: con imágenes mal alineadas, los resultados p
 | `tools/label_frames.py` | ventana para dibujar las cajas; escribe las etiquetas YOLO en `labels/` |
 | `tools/check_frame_alignment.py` | comprueba que las imágenes son los frames que procesa el seguimiento |
 | `tools/eval_tracking.py` | repite la corrida y la compara con tus etiquetas |
+| `tools/review_boxes.py` | revisar y corregir las cajas automáticas de un `dataset_<fecha>` (sección 10) |
+| `tools/build_training_set.py` | arma el conjunto de entrenamiento de RF-DETR desde varios `dataset_<fecha>`, recortado al ROI y repartido por video |
+| `tools/inventory_videos.py` | inventario de videos pesados: metadatos, duplicados y grupos por arena y cámara (sección 9) |
 | `tools/replay.py` | repite una corrida sin ventanas y escribe sus CSV |
 | `tools/check_dataset.py` | revisa el conjunto de datos automático (`dataset_<fecha>/`) |
