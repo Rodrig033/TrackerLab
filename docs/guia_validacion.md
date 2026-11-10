@@ -288,7 +288,75 @@ Escribe `data.yaml`, `train/` y `valid/` (cada uno con `images` y `labels`) y `c
 
 ---
 
-## 12. Qué hace cada herramienta
+### Con frames etiquetados a mano (cuando el seguimiento falla)
+
+Si en un video el seguimiento clásico falla (reflejos en las paredes, luz que cambia), no sirve como fuente de etiquetas: el generador solo guarda los frames en que el seguimiento acierta, y se pierden justo los casos difíciles que el detector necesita ver. En ese caso las cajas las dibujas tú, y los frames se reparten por **todo** el video sin importar si el seguimiento acertó.
+
+| | Etiquetas automáticas (`--train`, `--valid`) | Etiquetas a mano (`--train-manual`, `--valid-manual`) |
+|---|---|---|
+| Cuándo | el seguimiento funciona bien en ese video | el seguimiento falla (reflejos, luz) |
+| Imágenes que entran | solo donde el seguimiento acertó (y que no toquen el borde del ROI) | repartidas por todo el video |
+| Tu trabajo | revisar con `review_boxes.py` | dibujar con `label_frames.py` |
+
+**Procedimiento por video** (el rol de cada uno se decide al armar el conjunto):
+1. Corre TrackerLab **solo para definir el ROI**, con `SAVE_RUN_INPUTS = True`. Que el seguimiento salga mal no importa. Dibuja el ROI **holgado** (incluye la base de las paredes, unos 15 a 20 px): así el ratón pegado a la pared no sale cortado y el detector ve también los reflejos. Pon un rango que cubra **todo el video**, para que los frames se repartan por todo él y capturen los cambios de luz.
+2. Muestrea. **Una carpeta por rol**; `--entradas` se puede repetir para meter varios videos en la misma:
+```
+python tools/sample_frames.py --entradas "RUTA_ENTRADAS_R1S2" --entradas "RUTA_ENTRADAS_R2S1" --salida /Users/farid/TrackerLab_Resultados/manual_entrenamiento --por-video 60
+python tools/sample_frames.py --entradas "RUTA_ENTRADAS_R3S1" --salida /Users/farid/TrackerLab_Resultados/manual_validacion --por-video 40
+```
+3. Etiqueta y verifica cada carpeta (debe decir `ALINEADO: N de N`):
+```
+python tools/label_frames.py /Users/farid/TrackerLab_Resultados/manual_entrenamiento
+python tools/check_frame_alignment.py /Users/farid/TrackerLab_Resultados/manual_entrenamiento
+```
+   **El criterio:** la caja va sobre el **ratón real, nunca sobre su reflejo**, ajustada al cuerpo y sin la cola. Si no estás seguro de cuál es el ratón, `k` (dudosa); si no hay ratón, `x`. Las dudosas y las «sin ratón» no entran al entrenamiento.
+   **Audita la consistencia antes de seguir con más videos.** El detector aprende la regla con que dibujas, y lo que más daña es que unas veces la cola vaya dentro de la caja y otras no:
+```
+python tools/audit_labels.py /Users/farid/TrackerLab_Resultados/manual_entrenamiento
+open /Users/farid/TrackerLab_Resultados/manual_entrenamiento/auditoria.png
+```
+   La hoja muestra un recorte por caja, **todos a la misma escala** y ordenados por área (las más chicas primero). Mira los dos extremos: una caja que incluye la cola se ve más larga que el cuerpo de las demás. El borde rojo es solo una **alerta estadística** (área fuera de lo habitual); un ratón estirado o agachado también sale fuera. Lo que decide es mirar la imagen. Para corregir una caja, vuelve a abrir `label_frames.py`, navega hasta ese frame con `a` y `d`, y arrastra una caja nueva: reemplaza a la anterior.
+4. Arma el conjunto. `--entradas` da el ROI de cada video: el manifiesto de `sample_frames` no lo guarda, y se empareja con el video por su huella:
+```
+python tools/build_training_set.py \
+  --train-manual /Users/farid/TrackerLab_Resultados/manual_entrenamiento \
+  --valid-manual /Users/farid/TrackerLab_Resultados/manual_validacion \
+  --entradas "RUTA_ENTRADAS_R1S2" --entradas "RUTA_ENTRADAS_R2S1" --entradas "RUTA_ENTRADAS_R3S1" \
+  --excluir-videos-de "$VAL2" \
+  --salida /Users/farid/TrackerLab_Resultados/entrenamiento
+```
+Sustituye las rutas `RUTA_ENTRADAS_...` por las reales (las que imprime `find ... -name "entradas_*"`), sin `<` `>`. `--excluir-videos-de "$VAL2"` impide que el video reservado (SMR12408) se cuele en el entrenamiento. Se pueden mezclar fuentes automáticas y manuales en el mismo conjunto: la ficha dice de cuál es cada imagen.
+
+---
+
+## 12. Entrenar el detector en Colab
+
+El cuaderno es `colab/entrenar_rfdetr.ipynb`. Se **genera** con `python tools/make_colab_notebook.py` (no se edita a mano), para que la decodificación del ONNX sea siempre la de `learning/onnx_decode.py`.
+
+**Antes de empezar**
+1. Comprime la carpeta que armó `build_training_set.py` (la que tiene `data.yaml`, `train/` y `valid/`) en `entrenamiento.zip`. Los videos **nunca** se suben, solo esto (decenas de MB).
+2. Abre `colab.research.google.com`, **Archivo → Subir cuaderno**, y elige el `.ipynb`. Luego **Entorno de ejecución → Cambiar tipo de entorno de ejecución → GPU**.
+3. Ejecuta las celdas **de arriba abajo**, una por una. La primera celda de código es la configuración: lo único que normalmente se toca es `MODELO` (`"small"` o `"nano"`).
+
+**Qué mirar en cada paso**
+| Paso | Qué comprobar |
+|---|---|
+| 5 · Revisar el conjunto | Las 8 imágenes: el recorte debe ser la arena, el ratón debe verse grande y la caja verde debe rodear el cuerpo **sin la cola**. Si algo se ve mal, **detente** |
+| 6 · Prueba de 2 épocas | Que no falle, el tiempo por época y la memoria de la GPU. Sus mAP no significan nada |
+| 8 · Mejor punto | El mAP de validación. Solo sirve para elegir el mejor punto de este entrenamiento |
+| 9 · Cajas contra el conjunto | La razón de ancho y alto: por debajo de 1 significa cajas más angostas que las del conjunto |
+| 11 · Verificar el ONNX | Debe decir «El ONNX coincide con el modelo original». Si dice ADVERTENCIA, **no uses ese ONNX** |
+
+**Dónde queda el resultado.** Si dejas `GUARDAR_EN_DRIVE = True`, en `Mi unidad/TrackerLab_Entrenamiento/<corrida>/`: `checkpoint_best_total.pth`, el `.onnx`, `run_info.json` (versión de rfdetr, parámetros, tiempos y métricas: **anótala, sirve para reproducir**), `conjunto_info.json` y un `.zip` con todo. Ocupa unos cientos de MB por corrida: el cuaderno imprime el tamaño exacto, y conviene mirar cuánto espacio libre te queda en Drive. El entrenamiento en sí corre en el disco local de Colab (los checkpoints pesan), y se pierde al desconectarte.
+
+**Dos cosas que conviene saber**
+- RF-DETR redimensiona cada imagen a un **cuadrado**. Si el recorte del ROI no es cuadrado, la imagen se estira. Es lo que dice la receta oficial del ONNX, y TrackerLab hará lo mismo al usar el modelo, así que entrenamiento y uso son consistentes.
+- **La validación de este cuaderno no es la evaluación final.** Sale de videos de validación con etiquetas automáticas o revisadas. La medida que cuenta se hace en tu Mac con el **video reservado** y tus 20 etiquetas a mano.
+
+---
+
+## 13. Qué hace cada herramienta
 
 | Herramienta | Para qué |
 |---|---|
@@ -297,7 +365,10 @@ Escribe `data.yaml`, `train/` y `valid/` (cada uno con `images` y `labels`) y `c
 | `tools/check_frame_alignment.py` | comprueba que las imágenes son los frames que procesa el seguimiento |
 | `tools/eval_tracking.py` | repite la corrida y la compara con tus etiquetas |
 | `tools/review_boxes.py` | revisar y corregir las cajas automáticas de un `dataset_<fecha>` (sección 10) |
-| `tools/build_training_set.py` | arma el conjunto de entrenamiento de RF-DETR desde varios `dataset_<fecha>`, recortado al ROI y repartido por video |
+| `tools/build_training_set.py` | arma el conjunto de entrenamiento de RF-DETR desde varios `dataset_<fecha>` (etiquetas automáticas) y/o frames etiquetados a mano, recortado al ROI y repartido por video |
 | `tools/inventory_videos.py` | inventario de videos pesados: metadatos, duplicados y grupos por arena y cámara (sección 9) |
+| `tools/make_colab_notebook.py` | genera el cuaderno de Colab `colab/entrenar_rfdetr.ipynb` (sección 12) |
+| `learning/onnx_decode.py` | decodifica la salida del ONNX de RF-DETR (la usan el cuaderno y, después, TrackerLab) |
+| `tools/audit_labels.py` | hoja de auditoría de las cajas etiquetadas a mano: un recorte por caja, a la misma escala y ordenado por área (sección 11) |
 | `tools/replay.py` | repite una corrida sin ventanas y escribe sus CSV |
 | `tools/check_dataset.py` | revisa el conjunto de datos automático (`dataset_<fecha>/`) |

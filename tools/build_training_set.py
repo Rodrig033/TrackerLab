@@ -22,6 +22,7 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 JPEG_QUALITY = 95
 Rect = Tuple[int, int, int, int]  # x0, y0, x1, y1 (x1, y1 exclusivos)
 
+ADV_AUTOMATICAS, ADV_BORDE, ADV_POSITIVOS = 0, 1, 2  # posiciones de ADVERTENCIAS
 ADVERTENCIAS = [
     "Las etiquetas son AUTOMÁTICAS (las produjo el seguimiento clásico): heredan sus errores y su forma de caja "
     "(medido en validación: más angostas que las dibujadas a mano y a veces con parte de la cola). Revísalas.",
@@ -30,9 +31,7 @@ ADVERTENCIAS = [
 ]
 
 
-# ----------------------------------------------------------------------
 # Piezas puras
-# ----------------------------------------------------------------------
 def safe_name(name: str) -> str:
     stem = os.path.splitext(os.path.basename(name))[0]
     stem = re.sub(r"[^0-9A-Za-z_-]+", "_", stem).strip("_")
@@ -86,6 +85,8 @@ class Fuente:
     roi_box: Optional[Tuple[int, int, int, int]] = None
     roi_origen: str = ""
     revision: Optional[Dict[str, Any]] = None
+    tipo: str = "auto"  # "auto" (dataset_<fecha>) o "manual" (sample_frames + label_frames)
+    items: Optional[List[Tuple[str, str, str, str]]] = None  # solo "manual": (división, nombre, imagen, etiqueta)
 
 
 def read_info(ruta: str) -> Dict[str, Any]:
@@ -114,6 +115,58 @@ def find_roi(ruta: str, info: Dict[str, Any]) -> Tuple[Optional[Tuple[int, int, 
             if roi and len(roi) == 4:
                 return tuple(int(v) for v in roi), f"entradas_{m.group(1)}/inputs.json"  # type: ignore[return-value]
     return None, ""
+
+
+def read_manual_manifest(ruta: str) -> Dict[str, Any]:
+    """Manifiesto de un conjunto hecho con tools/sample_frames.py (frames para etiquetar a mano)."""
+    p = os.path.join(ruta, "manifest.json")
+    if not os.path.exists(p):
+        raise FileNotFoundError(f"{ruta} no es un conjunto de frames etiquetados a mano: falta manifest.json (lo crea tools/sample_frames.py).")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            man = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"No se pudo leer {p}: {exc}") from exc
+    if not isinstance(man.get("videos"), list) or not man["videos"]:
+        raise ValueError(f"{p} no trae ningún video.")
+    return man
+
+
+def manual_items(ruta: str, video: Dict[str, Any]) -> List[Tuple[str, str, str, str]]:
+    """(división, nombre, imagen, etiqueta) de los frames de un video del manifiesto, en orden de frame.
+
+    Los nombres siguen a ``sample_frames.image_name``: ``<id>_f<frame de 6 cifras>.<formato>``.
+    """
+    ext = video.get("formato", "jpg")
+    out = []
+    for idx in sorted(int(f) for f in video.get("frames", [])):
+        stem = f"{video['id']}_f{idx:06d}"
+        out.append(("manual", f"f{idx:06d}", os.path.join(ruta, "images", f"{stem}.{ext}"), os.path.join(ruta, "labels", stem + ".txt")))
+    return out
+
+
+def read_run_roi(carpeta: str) -> Tuple[Dict[str, Any], Tuple[int, int, int, int]]:
+    """(datos del video, ROI) de una carpeta ``entradas_<fecha>`` (la que deja una corrida con SAVE_RUN_INPUTS = True)."""
+    p = os.path.join(carpeta, "inputs.json")
+    if not os.path.exists(p):
+        raise FileNotFoundError(f"{carpeta} no es una carpeta entradas_<fecha>: falta inputs.json.")
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
+    roi = d.get("roi_box")
+    if not (isinstance(roi, list) and len(roi) == 4):
+        raise ValueError(f"{p} no trae roi_box.")
+    return d.get("video") or {}, tuple(int(v) for v in roi)  # type: ignore[return-value]
+
+
+def match_roi(video: Dict[str, Any], corridas: Sequence[Tuple[str, Dict[str, Any], Tuple[int, int, int, int]]]) -> List[Tuple[Tuple[int, int, int, int], str]]:
+    """ROIs de las corridas que son de ``video`` (un video del manifiesto), por huella; si no hay huella, por nombre de archivo."""
+    huella = video.get("sha256_extremos")
+    por_huella = [(roi, os.path.basename(os.path.normpath(c)) + "/inputs.json") for c, vd, roi in corridas if huella and vd.get("sha256_extremos") == huella]
+    if por_huella:
+        return por_huella
+    nombre = video.get("nombre")
+    return [(roi, os.path.basename(os.path.normpath(c)) + "/inputs.json") for c, vd, roi in corridas
+            if nombre and os.path.basename(vd.get("path", "")) == nombre and not (huella and vd.get("sha256_extremos"))]
 
 
 def list_items(ruta: str, splits: Sequence[str]) -> List[Tuple[str, str, str, str]]:
@@ -163,10 +216,13 @@ def build(
     max_por_video: Optional[int] = None,
     sobrescribir: bool = False,
     solo_revisadas: bool = False,
+    train_manual: Sequence[str] = (),
+    valid_manual: Sequence[str] = (),
+    entradas: Sequence[str] = (),
     out: Callable[[str], None] = print,
 ) -> int:
-    if not train:
-        out("Indica al menos un video de entrenamiento con --train.")
+    if not train and not train_manual:
+        out("Indica al menos un video de entrenamiento con --train o --train-manual.")
         return 2
     if margen_roi < 0:
         out("--margen-roi no puede ser negativo.")
@@ -207,6 +263,43 @@ def build(
                     return 2
             fuentes.append(f)
 
+    avisos_roi: List[str] = []
+    corridas: List[Tuple[str, Dict[str, Any], Tuple[int, int, int, int]]] = []
+    for c in entradas:
+        try:
+            vd, roi = read_run_roi(c)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            out(str(exc))
+            return 2
+        corridas.append((c, vd, roi))
+    for rol, rutas in (("train", train_manual), ("valid", valid_manual)):
+        for r in rutas:
+            real = os.path.realpath(r)
+            if real in vistos:
+                out(f"La carpeta {r} está repetida (ya figura como {vistos[real]}).")
+                return 2
+            vistos[real] = rol
+            try:
+                man = read_manual_manifest(r)
+            except (FileNotFoundError, ValueError, OSError) as exc:
+                out(str(exc))
+                return 2
+            for v in man["videos"]:
+                huella = v.get("sha256_extremos")
+                prefijo = safe_name(v.get("nombre") or v["id"]) + (f"_{huella[:8]}" if huella else "")
+                f = Fuente(f"{r}#{v['id']}", rol, {"video": {"nombre": v.get("nombre"), "sha256_extremos": huella}, "modo_de_seguimiento": "a mano"},
+                           prefijo, huella, tipo="manual")
+                f.items = manual_items(r, v)
+                if recorte_roi:
+                    hits = match_roi(v, corridas)
+                    if not hits:
+                        out(f"No se encontró el ROI de «{v.get('nombre')}»: pasa --entradas con la carpeta entradas_<fecha> de una corrida de ESE video, o usa --sin-recorte.")
+                        return 2
+                    f.roi_box, f.roi_origen = hits[0]
+                    if len({h[0] for h in hits}) > 1:
+                        avisos_roi.append(f"«{v.get('nombre')}» tiene {len(hits)} corridas con ROI distintos; se usa el de {hits[0][1]}.")
+                fuentes.append(f)
+
     prefs = [f.prefijo for f in fuentes]
     if len(set(prefs)) != len(prefs):  # dos videos con el mismo nombre y sin huella: se numeran
         cuenta: Dict[str, int] = {}
@@ -227,7 +320,8 @@ def build(
             por_huella[f.huella] = f
 
     # 3) protección del video reservado
-    advertencias: List[str] = list(ADVERTENCIAS)
+    hay_auto = any(f.tipo == "auto" for f in fuentes)
+    advertencias: List[str] = ([ADVERTENCIAS[ADV_AUTOMATICAS], ADVERTENCIAS[ADV_BORDE]] if hay_auto else []) + [ADVERTENCIAS[ADV_POSITIVOS]] + avisos_roi
     if excluir_videos_de:
         try:
             reservadas = reserved_fingerprints(excluir_videos_de)
@@ -243,16 +337,16 @@ def build(
                 advertencias.append(f"No se pudo comprobar si {f.ruta} es un video reservado (la ficha no trae su huella).")
 
     # 4) selección de imágenes por fuente
-    usa_val_interno = not valid
-    if usa_val_interno:
+    usa_val_interno = not (valid or valid_manual)
+    if usa_val_interno and any(f.tipo == "auto" and f.rol == "train" for f in fuentes):
         advertencias.append("No se indicó --valid: la validación sale de bloques de tiempo de los MISMOS videos de entrenamiento. "
                             "Es optimista; para una validación honesta usa un video aparte con --valid.")
     plan: List[Tuple[Fuente, str, str, str, str, Optional[Dict[str, Any]]]] = []  # (fuente, destino, nombre, imagen, etiqueta, decisión de la revisión)
     pre_omit: Dict[str, Dict[str, int]] = {f.ruta: {} for f in fuentes}
     for f in fuentes:
-        items = list_items(f.ruta, ("train", "val"))
-        if f.rol == "valid":
-            elegidos = [("valid", sp, n, i, l) for sp, n, i, l in items]
+        items = f.items if f.tipo == "manual" else list_items(f.ruta, ("train", "val"))
+        if f.tipo == "manual" or f.rol == "valid":
+            elegidos = [(f.rol, sp, n, i, l) for sp, n, i, l in (items or [])]
         elif usa_val_interno:
             elegidos = [("train" if sp == "train" else "valid", sp, n, i, l) for sp, n, i, l in items]
         else:
@@ -282,7 +376,7 @@ def build(
         out("No hay imágenes de entrenamiento en las carpetas indicadas.")
         return 2
     if not any(p[1] == "valid" for p in plan):
-        out("No hay imágenes de validación: indica un video con --valid, o usa conjuntos que traigan su propia separación (images/val).")
+        out("No hay imágenes de validación: indica un video con --valid o --valid-manual, o usa conjuntos que traigan su propia separación (images/val).")
         return 2
 
     # 5) carpeta de salida
@@ -304,6 +398,7 @@ def build(
     motivos: Dict[str, Dict[str, int]] = {f.ruta: {} for f in fuentes}
 
     usadas: Dict[str, Dict[str, int]] = {f.ruta: {"aceptadas": 0, "corregidas": 0, "sin_revisar": 0} for f in fuentes}
+    a_mano: Dict[str, int] = {f.ruta: 0 for f in fuentes}  # imágenes de fuentes etiquetadas a mano que sí se usaron
     for ruta, d in pre_omit.items():  # lo que la revisión dejó fuera también cuenta como omitido
         for motivo, k in d.items():
             conteo[ruta]["omitidas"] += k
@@ -329,7 +424,10 @@ def build(
                 with open(lab_path, encoding="utf-8-sig") as fh_:
                     lineas = [ln for ln in fh_.read().splitlines() if ln.strip()]
             if len(lineas) != 1:
-                omitir(f, "etiqueta_con_cero_o_varias_cajas")
+                if f.tipo == "manual":  # a mano: «sin ratón» y «varias cajas» son decisiones distintas
+                    omitir(f, "sin_raton" if not lineas else "varias_cajas")
+                else:
+                    omitir(f, "etiqueta_con_cero_o_varias_cajas")
                 continue
             rect = crop_rect(f.roi_box, margen_roi, fw, fh) if (recorte_roi and f.roi_box) else None
             nueva = convert_label(lineas[0], fw, fh, rect)
@@ -351,7 +449,9 @@ def build(
         with open(os.path.join(salida, dest, "labels", stem + ".txt"), "w", encoding="utf-8") as fh_:
             fh_.write(nueva + "\n")
         conteo[f.ruta][dest] += 1
-        if entrada is None:
+        if f.tipo == "manual":
+            a_mano[f.ruta] += 1
+        elif entrada is None:
             usadas[f.ruta]["sin_revisar"] += 1
         else:
             usadas[f.ruta]["corregidas" if entrada["estado"] == CORRECTED else "aceptadas"] += 1
@@ -366,9 +466,13 @@ def build(
         return 2
     tot_sin = sum(u["sin_revisar"] for u in usadas.values())
     tot_cor = sum(u["corregidas"] for u in usadas.values())
-    if tot_sin == 0:  # todo lo que se usa pasó por una persona: ya no son etiquetas solo automáticas
-        advertencias.remove(ADVERTENCIAS[0])
-        advertencias.insert(0, f"Todas las imágenes usadas fueron revisadas a mano ({tot_cor} con la caja corregida): convención de cuerpo sin cola.")
+    n_man = sum(a_mano.values())
+    if not hay_auto:
+        advertencias.insert(0, f"Todas las etiquetas están dibujadas a mano ({n_man} imágenes): su calidad depende de aplicar siempre el mismo criterio "
+                               "(caja sobre el ratón y no sobre su reflejo, ajustada al cuerpo, sin la cola).")
+    elif tot_sin == 0:  # todo lo automático que se usa pasó por una persona: ya no son etiquetas solo automáticas
+        advertencias.remove(ADVERTENCIAS[ADV_AUTOMATICAS])
+        advertencias.insert(0, f"Todas las imágenes usadas fueron revisadas o dibujadas a mano ({tot_cor} con la caja corregida, {n_man} dibujadas a mano): convención de cuerpo sin cola.")
     else:
         advertencias.append(f"{tot_sin} de {n_train + n_valid} imágenes usadas no se revisaron: llevan la caja automática tal cual.")
     if n_train < 100:
@@ -381,7 +485,7 @@ def build(
         "recorte_roi": bool(recorte_roi), "margen_roi_px": int(margen_roi) if recorte_roi else None,
         "validacion_aparte": bool(valid), "max_por_video": max_por_video, "solo_revisadas": bool(solo_revisadas),
         "imagenes": {"train": n_train, "valid": n_valid},
-        "fuentes": [{"ruta": f.ruta, "rol": f.rol, "prefijo": f.prefijo, "video": (f.info.get("video") or {}).get("nombre"),
+        "fuentes": [{"ruta": f.ruta, "tipo": f.tipo, "rol": f.rol, "prefijo": f.prefijo, **({"etiquetas_a_mano": a_mano[f.ruta]} if f.tipo == "manual" else {}), "video": (f.info.get("video") or {}).get("nombre"),
                      "huella": f.huella, "roi_box": list(f.roi_box) if f.roi_box else None, "roi_origen": f.roi_origen or None,
                      "modo_de_seguimiento": f.info.get("modo_de_seguimiento"), **conteo[f.ruta], "motivos_de_omision": motivos[f.ruta],
                      "revision": {"tiene_revision": f.revision is not None, **{"usadas_" + k: v for k, v in usadas[f.ruta].items()}}}
@@ -409,6 +513,9 @@ def build(
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Arma el conjunto de entrenamiento de RF-DETR desde las carpetas dataset_<fecha>.")
     ap.add_argument("--train", action="append", default=[], help="carpeta dataset_<fecha> de un video de ENTRENAMIENTO (se puede repetir)")
+    ap.add_argument("--train-manual", action="append", default=[], help="carpeta de frames ETIQUETADOS A MANO (sample_frames + label_frames) cuyos videos entrenan (se puede repetir)")
+    ap.add_argument("--valid-manual", action="append", default=[], help="idem, para videos de VALIDACIÓN (se puede repetir)")
+    ap.add_argument("--entradas", action="append", default=[], help="carpeta entradas_<fecha> de una corrida de cada video etiquetado a mano: de ahí sale el ROI para recortar (se puede repetir)")
     ap.add_argument("--valid", action="append", default=[], help="carpeta dataset_<fecha> de un video de VALIDACIÓN (se puede repetir)")
     ap.add_argument("--salida", default="entrenamiento", help="carpeta donde escribir (por omisión: entrenamiento)")
     ap.add_argument("--excluir-videos-de", action="append", default=[], help="conjunto de validación a mano (carpeta con manifest.json) cuyos videos NO deben usarse")
@@ -419,7 +526,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--sobrescribir", action="store_true", help="rehacer una carpeta de salida que ya existe")
     a = ap.parse_args(argv)
     return build(a.train, a.valid, a.salida, recorte_roi=not a.sin_recorte, margen_roi=a.margen_roi,
-                 excluir_videos_de=a.excluir_videos_de, max_por_video=a.max_por_video, sobrescribir=a.sobrescribir, solo_revisadas=a.solo_revisadas)
+                 excluir_videos_de=a.excluir_videos_de, max_por_video=a.max_por_video, sobrescribir=a.sobrescribir, solo_revisadas=a.solo_revisadas,
+                 train_manual=a.train_manual, valid_manual=a.valid_manual, entradas=a.entradas)
 
 
 if __name__ == "__main__":
