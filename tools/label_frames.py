@@ -1,32 +1,3 @@
-#!/usr/bin/env python3
-"""Etiquetador sencillo: dibuja una caja alrededor del ratón en cada imagen de ``validacion/``.
-
-Uso (desde la raíz del proyecto):
-    python tools/label_frames.py validacion
-    python tools/label_frames.py validacion --solo-resumen        # cuántas van, sin abrir ventana
-    python tools/label_frames.py validacion --desde-inicio        # empezar en la primera imagen
-
-Abre una ventana con cada imagen creada por tools/sample_frames.py y escribe las etiquetas YOLO en
-``validacion/labels/`` (el formato que espera tools/eval_tracking.py). No hay nada que exportar.
-
-Controles:
-    arrastrar el ratón   dibuja la caja (si te equivocas, vuelve a arrastrar: reemplaza a la anterior)
-    x                    en esta imagen NO se ve el ratón: etiqueta vacía, y pasa a la siguiente
-    d  o  espacio        siguiente imagen            a   imagen anterior
-    n                    próxima imagen pendiente    u   borra la etiqueta de esta imagen
-    k                    dudosa: se deja sin etiquetar y se anota en dudosas.txt
-    h                    muestra u oculta la ayuda   q  o  ESC   salir
-
-Todo se guarda AL INSTANTE (al soltar la caja, al pulsar x, u o k): si cierras de golpe no pierdes nada, y al
-volver a abrirlo continúa donde lo dejaste. Es CIEGO a propósito: nunca muestra cajas de TrackerLab ni de ningún
-modelo, solo las que tú dibujes.
-
-Convención (la misma de LEEME_ETIQUETADO.txt): caja ajustada al CUERPO visible del ratón, SIN la cola. Si el ratón
-no se ve o está tapado casi por completo, pulsa x. Si no estás seguro, pulsa k.
-
-Código de salida: 0 = bien, 2 = no se pudo abrir el conjunto.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -75,6 +46,23 @@ class Item:
     frame: int
     width: int
     height: int
+
+
+def find_items(items: List[Item], spec: str) -> List[int]:
+    """Posiciones de las imágenes que corresponden a ``spec``: un número de frame («2757», «f2757») o «video:frame» («Grupo1R1S2:2757»).
+
+    Si el frame existe en varios videos del conjunto y no se dice cuál, devuelve todas las coincidencias.
+    """
+    texto = spec.strip()
+    video: Optional[str] = None
+    if ":" in texto:
+        video, texto = texto.rsplit(":", 1)
+        video = video.strip()
+    texto = texto.strip().lstrip("fF")
+    if not texto.isdigit():
+        return []
+    frame = int(texto)
+    return [k for k, it in enumerate(items) if it.frame == frame and (video is None or it.video == video)]
 
 
 def load_items(valdir: str) -> List[Item]:
@@ -372,6 +360,7 @@ def main(argv: Optional[List[str]] = None, gui: Callable[[Labeler], None] = run_
     ap.add_argument("validacion", help="carpeta creada por tools/sample_frames.py")
     ap.add_argument("--solo-resumen", action="store_true", help="muestra cuántas van, sin abrir ventana")
     ap.add_argument("--desde-inicio", action="store_true", help="empezar en la primera imagen (por omisión, en la primera pendiente)")
+    ap.add_argument("--ir-a", metavar="FRAME", help="empezar en un frame concreto, p. ej. 2757 o Grupo1R1S2:2757 (sirve para corregir lo que marcó audit_labels.py)")
     ap.add_argument("--ancho-max", type=int, default=1280, help="ancho máximo de la ventana en píxeles (por omisión 1280)")
     ap.add_argument("--alto-max", type=int, default=800, help="alto máximo de la ventana en píxeles (por omisión 800)")
     a = ap.parse_args(argv)
@@ -384,6 +373,16 @@ def main(argv: Optional[List[str]] = None, gui: Callable[[Labeler], None] = run_
     except (FileNotFoundError, ValueError, OSError) as exc:
         out(str(exc))
         return 2
+    if a.ir_a:
+        hits = find_items(items, a.ir_a)
+        if not hits:
+            muestra = ", ".join(f"{it.video}:{it.frame}" for it in items[:12]) + (" ..." if len(items) > 12 else "")
+            out(f"No hay ninguna imagen «{a.ir_a}» en el conjunto. Algunas que sí hay: {muestra}")
+            return 2
+        if len(hits) > 1:
+            out(f"«{a.ir_a}» es ambiguo: está en varios videos ({', '.join(items[k].video for k in hits)}). Usa VIDEO:FRAME, por ejemplo {items[hits[0]].video}:{items[hits[0]].frame}.")
+            return 2
+        lab.goto(hits[0])
     out("Estado: " + format_summary(lab.counts()))
     if a.solo_resumen:
         return 0
@@ -391,7 +390,10 @@ def main(argv: Optional[List[str]] = None, gui: Callable[[Labeler], None] = run_
     gui(lab)
     out("Estado final: " + format_summary(lab.counts()))
     if lab.counts()[PENDING] == 0:
-        out(f'Listo. Siguiente: python tools/eval_tracking.py "{a.validacion}" --entradas "<carpeta entradas_...>"')
+        out("Listo: todas las imágenes tienen una decisión. Lo que sigue depende de para qué sea este conjunto:")
+        out(f'  · en cualquier caso, comprueba el alineamiento: python tools/check_frame_alignment.py "{a.validacion}"')
+        out(f'  · para ENTRENAR el detector: audita la consistencia con python tools/audit_labels.py "{a.validacion}" y luego arma el conjunto con tools/build_training_set.py (sección 11 de la guía)')
+        out(f'  · para VALIDAR el seguimiento clásico: python tools/eval_tracking.py "{a.validacion}" --entradas RUTA_DE_LA_CARPETA_entradas_DE_ESE_VIDEO (sustitúyela por la real)')
     else:
         out(f'Faltan {lab.counts()[PENDING]}. Vuelve a correr: python tools/label_frames.py "{a.validacion}"')
     return 0

@@ -316,17 +316,14 @@ python tools/check_frame_alignment.py /Users/farid/TrackerLab_Resultados/manual_
 python tools/audit_labels.py /Users/farid/TrackerLab_Resultados/manual_entrenamiento
 open /Users/farid/TrackerLab_Resultados/manual_entrenamiento/auditoria.png
 ```
-   La hoja muestra un recorte por caja, **todos a la misma escala** y ordenados por área (las más chicas primero). Mira los dos extremos: una caja que incluye la cola se ve más larga que el cuerpo de las demás. El borde rojo es solo una **alerta estadística** (área fuera de lo habitual); un ratón estirado o agachado también sale fuera. Lo que decide es mirar la imagen. Para corregir una caja, vuelve a abrir `label_frames.py`, navega hasta ese frame con `a` y `d`, y arrastra una caja nueva: reemplaza a la anterior.
-4. Arma el conjunto. `--entradas` da el ROI de cada video: el manifiesto de `sample_frames` no lo guarda, y se empareja con el video por su huella:
+   La hoja muestra un recorte por caja, **todos a la misma escala** y ordenados por área (las más chicas primero). Mira los dos extremos: una caja que incluye la cola se ve más larga que el cuerpo de las demás. El borde rojo es solo una **alerta estadística** (área fuera de lo habitual); un ratón estirado o agachado también sale fuera. Lo que decide es mirar la imagen. Para corregir una caja, abre el etiquetador directamente en ese frame (la propia auditoría imprime el comando): `python tools/label_frames.py "<carpeta>" --ir-a 2757` (o `VIDEO:FRAME` si el conjunto trae varios videos). Arrastra una caja nueva: reemplaza a la anterior. Ojo con la alerta roja: la caja va alineada a los ejes, así que un ratón largo en diagonal da una caja grande aunque esté bien dibujada.
+4. **Arma el conjunto.** Hace falta el ROI de cada video, que está en la carpeta `entradas_<fecha>` de una corrida de ese video (el manifiesto de `sample_frames` no lo guarda). Para no teclear ni pegar rutas largas, `find_runs.py` las busca solo (emparejando por la huella del video) y te **imprime el comando exacto**:
 ```
-python tools/build_training_set.py \
-  --train-manual /Users/farid/TrackerLab_Resultados/manual_entrenamiento \
-  --valid-manual /Users/farid/TrackerLab_Resultados/manual_validacion \
-  --entradas "RUTA_ENTRADAS_R1S2" --entradas "RUTA_ENTRADAS_R2S1" --entradas "RUTA_ENTRADAS_R3S1" \
-  --excluir-videos-de "$VAL2" \
-  --salida /Users/farid/TrackerLab_Resultados/entrenamiento
+python tools/find_runs.py --train-manual /Users/farid/TrackerLab_Resultados/manual_entrenamiento --valid-manual /Users/farid/TrackerLab_Resultados/manual_validacion --excluir-videos-de /Users/farid/TrackerLab_Resultados/validacion2
 ```
-Sustituye las rutas `RUTA_ENTRADAS_...` por las reales (las que imprime `find ... -name "entradas_*"`), sin `<` `>`. `--excluir-videos-de "$VAL2"` impide que el video reservado (SMR12408) se cuele en el entrenamiento. Se pueden mezclar fuentes automáticas y manuales en el mismo conjunto: la ficha dice de cuál es cada imagen.
+   Imprime, para cada video, la corrida que eligió (la más reciente) con su ROI, y avisa si un video tiene varias corridas con ROI distintos. Luego imprime el comando de `build_training_set.py`, con tus rutas reales: **cópialo entero y córrelo**. Si a algún video le falta su corrida, lo dice y no imprime el comando. `--excluir-videos-de` es el conjunto de tu video reservado (SMR12408): impide que se cuele en el entrenamiento. Sin `--train-manual` ni `--valid-manual`, solo lista las corridas que hay.
+
+Se pueden mezclar fuentes automáticas y manuales en el mismo conjunto: la ficha (`conjunto_info.json`) dice de cuál es cada imagen.
 
 ---
 
@@ -356,7 +353,33 @@ El cuaderno es `colab/entrenar_rfdetr.ipynb`. Se **genera** con `python tools/ma
 
 ---
 
-## 13. Qué hace cada herramienta
+## 13. Evaluar el detector en tu Mac
+
+El cuaderno de Colab deja, en `Mi unidad/TrackerLab_Entrenamiento/<corrida>/`, el mejor modelo, el `.onnx` y `run_info.json`. La evaluación que cuenta se hace **aquí**, sobre tu video reservado, con tus etiquetas a mano.
+
+**Preparación (una vez):**
+1. Instala `onnxruntime` en el entorno de TrackerLab: `pip install onnxruntime`.
+2. Baja de Drive la carpeta de la corrida a `/Users/farid/TrackerLab_Resultados/modelos/<corrida>/` (el `.onnx` pesa unos 127 MB). **Anota la versión de rfdetr** que dice `run_info.json`.
+
+**Evaluar:**
+```
+python tools/eval_detector.py /Users/farid/TrackerLab_Resultados/validacion2 --modelo /Users/farid/TrackerLab_Resultados/modelos/<corrida>/inference_model.onnx --entradas RUTA_ENTRADAS_DE_ESE_VIDEO
+```
+Sustituye `<corrida>` y la ruta de `--entradas` por las reales (`find_runs.py` lista las corridas y sus ROI; para SMR12408 conviene la de ROI holgado). Usa **las mismas métricas y la misma tabla** que `eval_tracking.py`, así que el resultado se compara directamente con el del seguimiento clásico sobre los mismos frames.
+
+- **El detector se usa sobre el recorte del ROI**, que es como se entrenó. Con el mismo margen: si no pasas `--margen-roi`, se lee de las notas que el cuaderno guarda dentro del ONNX (la salida dice de dónde salió).
+- Se toma la detección de **mayor confianza**; un frame «sin ratón» con una detección cuenta como falso positivo.
+- Imprime el **IoU mediano** (y el del 10 % peor) y cuánto más ancha o alta es la caja del detector que la tuya: por debajo de 1 es más angosta, como pasaba con el seguimiento clásico.
+- Escribe `resultados.json`, `por_frame.csv` y `fallos.png` en `evaluacion_detector_<fecha>/`.
+- `--modelo` se puede repetir para comparar varios (por ejemplo small y nano) en la misma tabla.
+
+**El tiempo por imagen.** La salida incluye cuánto tarda cada imagen **en esta máquina** (recortar, preparar, correr el modelo y decodificar; sin las dos primeras, que son más lentas). Con `--hilos 1`, `--hilos 2`... se ve cómo cambia. Es el dato que decide cómo se integra el detector en TrackerLab: en Colab salió ~650 ms por imagen en su CPU, pero tu Mac será otro.
+
+**Cómo leer el resultado sobre un video de otro entorno.** Es la prueba honesta de generalización: el detector nunca vio ese entorno. Espera algo peor que en la validación del cuaderno (que era del mismo entorno), y eso es información, no un fallo. Fíjate en `fallos.png` para ver **qué** falla: si el detector marca el reflejo, la sombra o el borde.
+
+---
+
+## 14. Qué hace cada herramienta
 
 | Herramienta | Para qué |
 |---|---|
@@ -370,5 +393,7 @@ El cuaderno es `colab/entrenar_rfdetr.ipynb`. Se **genera** con `python tools/ma
 | `tools/make_colab_notebook.py` | genera el cuaderno de Colab `colab/entrenar_rfdetr.ipynb` (sección 12) |
 | `learning/onnx_decode.py` | decodifica la salida del ONNX de RF-DETR (la usan el cuaderno y, después, TrackerLab) |
 | `tools/audit_labels.py` | hoja de auditoría de las cajas etiquetadas a mano: un recorte por caja, a la misma escala y ordenado por área (sección 11) |
+| `tools/find_runs.py` | localiza las corridas (`entradas_<fecha>`) de los videos de tus conjuntos y te imprime el comando exacto de `build_training_set.py` (sección 11) |
+| `tools/eval_detector.py` | evalúa un detector ONNX contra tus frames etiquetados a mano (mismas métricas que `eval_tracking.py`) y mide el tiempo por imagen en tu máquina (sección 13) |
 | `tools/replay.py` | repite una corrida sin ventanas y escribe sus CSV |
 | `tools/check_dataset.py` | revisa el conjunto de datos automático (`dataset_<fecha>/`) |

@@ -55,7 +55,7 @@ def crear_conjunto(base, w=100, h=80, frames=FRAMES, vid="v"):
     os.makedirs(os.path.join(val, "images"), exist_ok=True)
     os.makedirs(os.path.join(val, "labels"), exist_ok=True)
     for k, f in enumerate(frames):
-        cv2.imwrite(os.path.join(val, "images", f"{vid}_f{f:06d}.png"), np.full((h, w, 3), 40 + 30 * k, np.uint8))
+        cv2.imwrite(os.path.join(val, "images", f"{vid}_f{f:06d}.png"), np.full((h, w, 3), (40 + 30 * k) % 256, np.uint8))
     with open(os.path.join(val, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump({"videos": [{"id": vid, "ancho": w, "alto": h, "formato": "png", "frames": list(frames)}]}, fh)
     return val
@@ -519,20 +519,120 @@ class LineaDeComandosTests(Base):
                 tecla(lab, "x")
 
         L.main([self.val], gui=etiquetar_todo, out=msgs.append)
-        self.assertTrue(any("Listo. Siguiente: python tools/eval_tracking.py" in m for m in msgs))
+        texto = "\n".join(msgs)
+        self.assertIn("Listo: todas las imágenes tienen una decisión", texto)
+        self.assertIn(f'python tools/check_frame_alignment.py "{self.val}"', texto)  # vale para los dos usos
+        self.assertIn(f'python tools/audit_labels.py "{self.val}"', texto)  # para entrenar
+        self.assertIn("build_training_set.py", texto)
+        self.assertIn(f'python tools/eval_tracking.py "{self.val}" --entradas', texto)  # para validar el seguimiento
+        self.assertNotIn("<", texto.split("Listo:")[1])  # y ningún marcador entre < > que se pueda copiar sin querer
         msgs.clear()
         L.main([self.val, "--desde-inicio"], gui=lambda lab: None, out=msgs.append)
-        self.assertIn("Estado final: 0 con caja, 5 sin ratón", msgs[-2])  # lo anterior se conservó
+        # lo anterior se conservó. Se busca el mensaje y no una posición fija: después de «Estado final» van las sugerencias
+        self.assertTrue(any("Estado final: 0 con caja, 5 sin ratón" in m for m in msgs), msg="\n".join(msgs))
+        self.assertTrue(any(m.startswith("Listo: todas las imágenes") for m in msgs))
 
     def test_faltan(self):
         msgs = []
         L.main([self.val], gui=lambda lab: tecla(lab, "x"), out=msgs.append)
         self.assertTrue(any(m.startswith("Faltan 4.") for m in msgs))
+        self.assertFalse(any("Listo" in m for m in msgs))  # con pendientes no se dice que ya terminó
 
     def test_argumentos_de_tamano(self):
         vistos = []
         L.main([self.val, "--ancho-max", "50", "--alto-max", "40"], gui=lambda lab: vistos.append(lab.render().shape), out=lambda s: None)
         self.assertEqual(vistos, [(40 + 2 * L.BAR_H, 50, 3)])  # 100x80 -> escala 0.5, más las dos barras
+
+
+# ======================================================================
+class IrAUnFrameTests(Base):
+    """``--ir-a``: abrir directamente en un frame (para corregir lo que marcó audit_labels.py) sin avanzar imagen por imagen."""
+
+    def dos_videos(self):
+        val = os.path.join(self.tmp.name, "dos")
+        os.makedirs(os.path.join(val, "images"))
+        os.makedirs(os.path.join(val, "labels"))
+        videos = []
+        for vid, frames in (("a", [10, 30]), ("b", [30, 50])):
+            for f in frames:
+                cv2.imwrite(os.path.join(val, "images", f"{vid}_f{f:06d}.png"), np.full((80, 100, 3), 100, np.uint8))
+            videos.append({"id": vid, "ancho": 100, "alto": 80, "formato": "png", "frames": frames})
+        with open(os.path.join(val, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump({"videos": videos}, fh)
+        return val
+
+    def posicion(self, val, *args):
+        vistos, msgs = [], []
+        rc = L.main([val, *args], gui=lambda lab: vistos.append(lab.i), out=msgs.append)
+        return rc, vistos, "\n".join(msgs)
+
+    def test_find_items_acepta_varias_formas(self):
+        items = L.load_items(self.val)  # frames 10, 20, 30, 40, 50 del video «v»
+        for spec, esperado in (("30", [2]), ("f30", [2]), ("F30", [2]), (" 30 ", [2]), ("v:40", [3]), ("v: f40", [3]), ("50", [4]), ("10", [0])):
+            self.assertEqual(L.find_items(items, spec), esperado, msg=spec)
+        for spec in ("", "abc", "999", "x:30", "v:", ":30", "30.5", "-30", "f", "v:abc"):
+            self.assertEqual(L.find_items(items, spec), [], msg=spec)
+
+    def test_find_items_con_el_mismo_frame_en_dos_videos(self):
+        items = L.load_items(self.dos_videos())  # a:10, a:30, b:30, b:50
+        self.assertEqual(L.find_items(items, "30"), [1, 2])  # sin decir cuál, las dos
+        self.assertEqual(L.find_items(items, "a:30"), [1])
+        self.assertEqual(L.find_items(items, "b:30"), [2])
+        self.assertEqual(L.find_items(items, "c:30"), [])
+        self.assertEqual(L.find_items(items, "10"), [0])
+
+    def test_abre_en_el_frame_pedido(self):
+        for spec, esperado in (("30", 2), ("f40", 3), ("v:50", 4), ("10", 0)):
+            rc, vistos, _ = self.posicion(self.val, "--ir-a", spec)
+            self.assertEqual((rc, vistos), (0, [esperado]), msg=spec)
+
+    def test_gana_sobre_la_primera_pendiente_y_sobre_desde_inicio(self):
+        escribir(self.etiqueta(10), "")  # la primera pendiente sería la de índice 1
+        self.assertEqual(self.posicion(self.val)[1], [1])
+        self.assertEqual(self.posicion(self.val, "--ir-a", "50")[1], [4])
+        self.assertEqual(self.posicion(self.val, "--desde-inicio", "--ir-a", "30")[1], [2])
+
+    def test_lo_que_se_dibuja_cae_en_el_frame_pedido(self):
+        def dibujar(lab):
+            arrastrar(lab, 10, 10, 40, 40)
+        L.main([self.val, "--ir-a", "30"], gui=dibujar, out=lambda s: None)
+        self.assertTrue(os.path.exists(self.etiqueta(30)))
+        self.assertEqual([f for f in FRAMES if os.path.exists(self.etiqueta(f))], [30])  # y en ningún otro
+
+    def test_un_frame_que_no_existe_no_abre_la_ventana_y_orienta(self):
+        rc, vistos, texto = self.posicion(self.val, "--ir-a", "999")
+        self.assertEqual((rc, vistos), (2, []))
+        self.assertIn("No hay ninguna imagen «999»", texto)
+        self.assertIn("v:10", texto)  # cuáles sí hay
+        self.assertNotIn("Estado:", texto)
+        self.assertEqual(self.posicion(self.val, "--ir-a", "abc")[0], 2)
+
+    def test_la_lista_de_ejemplos_se_acorta(self):
+        grande = crear_conjunto(os.path.join(self.tmp.name, "g"), frames=list(range(10, 300, 10)))
+        _, _, texto = self.posicion(grande, "--ir-a", "5")
+        self.assertIn("v:10", texto)
+        self.assertIn("...", texto)
+        self.assertNotIn("v:290", texto)
+
+    def test_ambiguo_pide_el_video(self):
+        dos = self.dos_videos()
+        rc, vistos, texto = self.posicion(dos, "--ir-a", "30")
+        self.assertEqual((rc, vistos), (2, []))
+        self.assertIn("ambiguo", texto)
+        self.assertIn("Usa VIDEO:FRAME, por ejemplo a:30", texto)  # explica el formato y da un ejemplo que sí sirve
+        self.assertEqual(self.posicion(dos, "--ir-a", "b:30"), (0, [2], self.posicion(dos, "--ir-a", "b:30")[2]))
+        self.assertEqual(self.posicion(dos, "--ir-a", "a:30")[1], [1])
+        self.assertEqual(self.posicion(dos, "--ir-a", "c:30")[0], 2)
+
+    def test_con_solo_resumen_se_valida_pero_no_se_abre(self):
+        self.assertEqual(self.posicion(self.val, "--solo-resumen", "--ir-a", "30"), (0, [], self.posicion(self.val, "--solo-resumen", "--ir-a", "30")[2]))
+        self.assertEqual(self.posicion(self.val, "--solo-resumen", "--ir-a", "999")[0], 2)
+
+    def test_no_cambia_lo_ya_etiquetado(self):
+        escribir(self.etiqueta(20), "0 0.3 0.5 0.4 0.5\n")
+        antes = leer(self.etiqueta(20))
+        self.posicion(self.val, "--ir-a", "20")
+        self.assertEqual(leer(self.etiqueta(20)), antes)
 
 
 # ======================================================================

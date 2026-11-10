@@ -191,8 +191,11 @@ def audit(directorio: str, salida: Optional[str] = None, *, orden: str = "area",
         out("AVISO: hay menos de 8 cajas: no se marcan posibles inconsistentes (no hay base para decir qué es habitual).")
     elif alertas:
         lo, hi = tukey_bounds(areas)
+        marcadas = sort_items(alertas, "area")
         out(f"Posibles inconsistentes (área fuera de {max(lo, 0):.0f} a {hi:.0f} px²): "
-            + ", ".join(f"{a.video} f{a.frame} ({a.caja[2]:.0f}x{a.caja[3]:.0f})" for a in sort_items(alertas, 'area')))
+            + ", ".join(f"{a.video} f{a.frame} ({a.caja[2]:.0f}x{a.caja[3]:.0f})" for a in marcadas))
+        out("Ojo: un ratón en diagonal da una caja alineada a los ejes más grande aunque esté bien dibujada; lo que decide es mirar la imagen.")
+        out(f'Para corregir una: python tools/label_frames.py "{directorio}" --ir-a {marcadas[0].id}:{marcadas[0].frame}')
     else:
         out("Ninguna caja sale de lo habitual por su área.")
     lado = int(math.ceil(max(max(i.caja[2], i.caja[3]) for i in items) * contexto))

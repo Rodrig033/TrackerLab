@@ -276,8 +276,21 @@ class ConjuntoRealTests(TM.Base):
         self.assertEqual(rc, 0)
         self.assertIn("Posibles inconsistentes", texto)
         self.assertIn("bg.avi f30 (100x100)", texto)
+        self.assertIn(f'python tools/label_frames.py "{val}" --ir-a bg:30', texto)  # el comando exacto para ir a corregirla
+        self.assertIn("un ratón en diagonal", texto)  # y la advertencia de que la alerta no es un veredicto
         self.assertNotIn("f32 (", texto)
         self.assertIn("(máx/mín = 16.7)", texto)  # 10000 / 600
+
+    def test_con_varias_alertas_el_comando_es_para_la_de_menor_area(self):
+        def cajas(f):
+            return {30: (40, 40, 100, 100), 34: (40, 40, 120, 120)}.get(f, (60 + f % 5, 70, 30, 20))
+        val, vt = self.etiquetado(cajas=cajas, por_video=40)
+        assert 30 in vt[0]["frames"] and 34 in vt[0]["frames"]
+        rc, texto = self.correr(val)
+        self.assertEqual(rc, 0)
+        self.assertIn("bg.avi f30 (100x100), bg.avi f34 (120x120)", texto)  # de menor a mayor área
+        self.assertIn('--ir-a bg:30', texto)  # el ejemplo es la primera de la lista
+        self.assertNotIn('--ir-a bg:34', texto)
 
     def test_pocas_cajas_avisa_que_no_marca(self):
         val, _ = self.etiquetado(por_video=5)
@@ -285,6 +298,7 @@ class ConjuntoRealTests(TM.Base):
         self.assertEqual(rc, 0)
         self.assertIn("menos de 8 cajas", texto)
         self.assertNotIn("Posibles inconsistentes", texto)
+        self.assertNotIn("--ir-a", texto)  # sin alertas no hay nada que corregir
 
     def test_orden_columnas_celda_y_salida(self):
         val, _ = self.etiquetado()
