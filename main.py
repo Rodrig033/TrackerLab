@@ -140,13 +140,17 @@ from tracking.reacquisition import (
     SilhouetteReacquirer
 )
 from learning.session import DatasetSession
+from detection.subject import assistance_record, choose_subject, describe_assistance
 
 SILHOUETTE_BORDER_AWARE = True
 SILHOUETTE_REACQUIRE = True
-COLLECT_DATASET = True
+COLLECT_DATASET = False
 
 # Interruptor
 SAVE_RUN_INPUTS = True
+
+# --- Detector para proponer al sujeto (None = selección manual de siempre) ---
+DETECTOR_MODEL = "/Users/farid/TrackerLab_Resultados/modelos/rfdetr_small_20261110_214151/rfdetr-small.onnx"
 
 def clamp_box(
 
@@ -2272,12 +2276,11 @@ def main():
 
         ].copy()
 
-        bbox = select_object_bbox(
-
-            sample_roi,
-
-            "SELECCIONA EL SUJETO"
-
+        bbox, subject_info = choose_subject(
+            sample_frame,
+            roi_box,
+            model_path=DETECTOR_MODEL,
+            manual_select=lambda: select_object_bbox(sample_roi, "SELECCIONA EL SUJETO")
         )
 
         if bbox is None:
@@ -2902,8 +2905,11 @@ def main():
                 start_center,
                 bbox
             ),
-                reacquirer=(SilhouetteReacquirer(tracker) if SILHOUETTE_REACQUIRE and tracking_mode == "2" else None)
+                reacquirer=(SilhouetteReacquirer(tracker) if SILHOUETTE_REACQUIRE and tracking_mode == "2" else None),
+                assistance=assistance_record(DETECTOR_MODEL, subject_info)
             )
+
+        print(describe_assistance(job.assistance, {"1": "fondo", "2": "silueta", "3": "color"}.get(tracking_mode, tracking_mode)))
 
         if SAVE_RUN_INPUTS:
             save_run_inputs(

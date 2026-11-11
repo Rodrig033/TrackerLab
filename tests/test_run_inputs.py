@@ -1,3 +1,12 @@
+"""Pruebas de persistence/run_inputs.py y de tools/replay.py.
+
+Ejecutar desde la raíz del proyecto:
+    python -m pytest tests/test_run_inputs.py -v
+
+La propiedad central: GRABAR las entradas de una corrida y REPETIRLA debe dar exactamente los mismos
+registros, frame por frame, en los tres modos de seguimiento.
+"""
+
 import ast
 import csv
 import importlib
@@ -147,6 +156,32 @@ class IdaYVueltaTests(unittest.TestCase):
         self.assertTrue(any(rec.zones for rec in r.records))
         self.assertTrue(any(rec.x_rel_cm is not None for rec in r.records))
 
+    def test_la_asistencia_del_detector_se_graba_y_se_conserva_al_repetir(self):
+        constancia = {"modo": "proponer_sujeto", "sujeto": {"metodo": "detector", "motivo": "propuesta aceptada", "modelo": "rfdetr-small.onnx",
+                                              "confianza": 0.86, "caja_propuesta": [28, 78, 24, 24], "umbral": 0.5, "margen_roi_px": 0,
+                                              "notas_modelo": {"corrida": "rfdetr_small_20261110_214151", "version_rfdetr": "1.12.0"}}}
+        import dataclasses
+
+        def hacer(r):
+            return dataclasses.replace(Escenas.job_fondo(r), assistance=constancia)
+        o, r, carpeta = ida_y_vuelta(self.base("asistencia"), Escenas.p_bg, hacer, Escenas.OPT_FONDO, sample_idx=35)
+        self.comprobar(o, r)  # registros idénticos: la constancia no cambia el seguimiento
+        self.assertEqual(o.settings["asistencia_detector"], constancia)
+        self.assertEqual(r.settings["asistencia_detector"], constancia)  # la corrida repetida dice cómo se eligió al sujeto
+        self.assertEqual(load_run_inputs(carpeta).assistance, constancia)
+        with open(os.path.join(carpeta, "inputs.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["asistencia_detector"], constancia)
+
+    def test_la_constancia_no_cambia_el_seguimiento(self):
+        """La misma corrida con y sin constancia: registros idénticos."""
+        import dataclasses
+        with VideoReader(Escenas.p_bg) as r:
+            sin = run_tracking(Escenas.job_fondo(r), keep_records=True, log=None)
+        with VideoReader(Escenas.p_bg) as r:
+            con = run_tracking(dataclasses.replace(Escenas.job_fondo(r), assistance={"modo": "proponer_sujeto", "sujeto": {}}), keep_records=True, log=None)
+        self.assertEqual(sin.records, con.records)
+        self.assertIsNone(sin.settings["asistencia_detector"])
+
     def test_modo_silueta_con_busqueda_y_seleccion_independiente_del_margen(self):
         o, r, _ = ida_y_vuelta(self.base("sil"), Escenas.p_sil, Escenas.job_silueta, Escenas.OPT_SIL)
         self.comprobar(o, r)
@@ -270,6 +305,25 @@ class ContenidoGrabadoTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+
+    def test_sin_detector_la_constancia_es_nula(self):
+        self.assertIn("asistencia_detector", self.data)
+        self.assertIsNone(self.data["asistencia_detector"])
+        self.assertIsNone(load_run_inputs(self.carpeta).assistance)
+
+    def test_unas_entradas_anteriores_a_la_constancia_siguen_cargando(self):
+        import shutil
+        vieja = os.path.join(self.tmp.name, "entradas_vieja")
+        shutil.copytree(self.carpeta, vieja)
+        with open(os.path.join(vieja, "inputs.json"), encoding="utf-8") as f:
+            d = json.load(f)
+        del d["asistencia_detector"]
+        with open(os.path.join(vieja, "inputs.json"), "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        ins = load_run_inputs(vieja)
+        self.assertIsNone(ins.assistance)
+        with VideoReader(Escenas.p_bg) as r:
+            self.assertIsNone(build_job(ins, r).assistance)
 
     def test_nombre_de_la_carpeta_y_archivos(self):
         self.assertEqual(os.path.basename(self.carpeta), "entradas_20261022_101500")
@@ -462,6 +516,7 @@ class GrabarNuncaRompeLaCorridaTests(unittest.TestCase):
                                               options={}, sample_idx=35, log=None, now=AHORA))
 
 
+# ======================================================================
 class HerramientaReplayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -563,6 +618,7 @@ class HerramientaReplayTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+# ======================================================================
 class FormatoDelCsvContraLaAplicacionTests(unittest.TestCase):
     """El CSV de la repetición debe ser idéntico, byte a byte, al que escribe la export_tracking_csv REAL de main.py
     (extraída del archivo), con y sin zonas, origen y escala: las 8 combinaciones."""
@@ -647,6 +703,7 @@ class FormatoDelCsvContraLaAplicacionTests(unittest.TestCase):
         self.comprobar(1, None, 0.07)
 
 
+# ======================================================================
 class EnlaceEnMainTests(unittest.TestCase):
     """Comprueba, leyendo main.py como texto, que la grabación de entradas está bien enchufada."""
 

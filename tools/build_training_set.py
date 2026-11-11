@@ -14,6 +14,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from detection.model import crop_rect  # noqa: E402,F401  (fuente única; se reexporta)
 from learning.dataset import parse_yolo_label_line, yolo_label_line  # noqa: E402
 from learning.review import ACCEPTED, CORRECTED, EXCLUDED, PENDING, load_revision  # noqa: E402
 
@@ -31,22 +32,13 @@ ADVERTENCIAS = [
 ]
 
 
+# ----------------------------------------------------------------------
 # Piezas puras
+# ----------------------------------------------------------------------
 def safe_name(name: str) -> str:
     stem = os.path.splitext(os.path.basename(name))[0]
     stem = re.sub(r"[^0-9A-Za-z_-]+", "_", stem).strip("_")
     return stem or "video"
-
-
-def crop_rect(roi_box: Sequence[int], margin: int, frame_w: int, frame_h: int) -> Rect:
-    """Recorte alrededor del ROI con ``margin`` px por lado, limitado al frame."""
-    x, y, w, h = (int(v) for v in roi_box)
-    m = max(0, int(margin))
-    x0, y0 = max(0, x - m), max(0, y - m)
-    x1, y1 = min(frame_w, x + w + m), min(frame_h, y + h + m)
-    if x1 - x0 < 2 or y1 - y0 < 2:
-        raise ValueError(f"El ROI {tuple(roi_box)} queda fuera del frame de {frame_w}x{frame_h}.")
-    return x0, y0, x1, y1
 
 
 def convert_label(line: str, frame_w: int, frame_h: int, rect: Optional[Rect]) -> str:
@@ -197,7 +189,9 @@ def reserved_fingerprints(carpetas: Sequence[str]) -> Dict[str, str]:
     return out
 
 
+# ----------------------------------------------------------------------
 # Armado
+# ----------------------------------------------------------------------
 def _write_json(path: str, data: Any) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:

@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from typing import Any, List, Optional
+
 from analysis.quality import assess_quality, quality_rows
 
 __all__ = ["provenance_rows"]
@@ -29,6 +31,21 @@ def _calibration_rows(s) -> List[List[Any]]:
         ["calibracion_origen_xy_px", f"{origen[0]:g}, {origen[1]:g}" if origen else "no definido"],
         ["calibracion_roi_x0_y0_ancho_alto_px", ", ".join(str(int(v)) for v in roi) if roi else ""],
         ["calibracion_video_ancho_alto_px", ", ".join(str(int(v)) for v in tam) if tam else ""],
+    ]
+
+
+def _assistance_rows(s) -> List[List[Any]]:
+    """Asistencia del detector, aparte del modo de seguimiento. Corridas anteriores a esta constancia: «no registrada»."""
+    if "asistencia_detector" not in s:
+        return [["proc_asistencia_detector", "no registrada"]]
+    a = s.get("asistencia_detector") or {}
+    suj = a.get("sujeto") or {}
+    conf = suj.get("confianza")
+    return [
+        ["proc_asistencia_detector", a.get("modo") or "ninguna"],
+        ["proc_sujeto_elegido_por", {"detector": "detector", "manual": "a mano", "cancelado": "cancelado"}.get(suj.get("metodo"), "a mano")],
+        ["proc_sujeto_confianza_detector", _num(conf, 4) if isinstance(conf, (int, float)) and not isinstance(conf, bool) else ""],
+        ["proc_detector_modelo", _plain(suj.get("modelo")) or ""],
     ]
 
 
@@ -65,4 +82,6 @@ def provenance_rows(result, app_version: str) -> List[List[Any]]:
         rows += quality_rows(assess_quality(records, result.timing.dt))
     else:
         rows.append(["calidad_veredicto", "no calculado (no se guardaron los registros por frame)"])
+    if s:
+        rows += _assistance_rows(s)  # al FINAL: las filas nuevas se añaden, nunca reordenan las existentes
     return rows

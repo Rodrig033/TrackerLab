@@ -1,0 +1,1 @@
+"""Uso del detector neuronal (ONNX) dentro de TrackerLab."""

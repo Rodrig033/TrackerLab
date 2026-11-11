@@ -1,4 +1,3 @@
-"""Entradas de una corrida: grabarlas y repetir el seguimiento sin ventanas."""
 from __future__ import annotations
 
 import json
@@ -65,8 +64,9 @@ def _read_png(path: str) -> np.ndarray:
     return img
 
 
+# ----------------------------------------------------------------------
 # Grabar
-
+# ----------------------------------------------------------------------
 def save_run_inputs(
     base_dir: str,
     job: TrackingJob,
@@ -78,6 +78,15 @@ def save_run_inputs(
     log: Optional[Callable[[str], None]] = print,
     now: Optional[Callable[[], datetime]] = None,
 ) -> Optional[str]:
+    """Graba las entradas de ``job`` en ``<base_dir>/entradas_<fecha>/``. Devuelve la carpeta, o None si falló.
+
+    NUNCA lanza una excepción: un fallo al grabar (disco lleno, permisos...) se avisa y el seguimiento continúa.
+
+    Debe llamarse ANTES de ``run_tracking`` (como hace main.py): durante la corrida el modelo de silueta se
+    actualiza, y lo que se graba es el modelo INICIAL, que es el que ``build_job`` reconstruye y comprueba.
+
+    sample_idx: frame de referencia con el que se dibujó el ROI, se eligió al sujeto y se calculó el fondo.
+    """
     say = log if log is not None else (lambda _m: None)
     try:
         tr = job.tracker
@@ -122,6 +131,7 @@ def save_run_inputs(
             "tracker": spec,
             "pipeline": {**{k: getattr(job, k) for k in PIPELINE_KEYS},
                          "reacquirer": type(job.reacquirer).__name__ if job.reacquirer is not None else None},
+            "asistencia_detector": _plain(getattr(job, "assistance", None)),
         }
         with open(os.path.join(folder, "inputs.json"), "w", encoding="utf-8") as f:
             json.dump(_plain(data), f, indent=2, ensure_ascii=False)
@@ -132,7 +142,9 @@ def save_run_inputs(
         return None
 
 
+# ----------------------------------------------------------------------
 # Cargar
+# ----------------------------------------------------------------------
 @dataclass
 class RunInputs:
     folder: str
@@ -147,6 +159,11 @@ class RunInputs:
     @property
     def roi_box(self) -> Tuple[int, int, int, int]:
         return tuple(int(v) for v in self.data["roi_box"])  # type: ignore[return-value]
+
+    @property
+    def assistance(self) -> Optional[Dict[str, Any]]:
+        """Cómo se eligió al sujeto (detector o a mano). None en corridas anteriores a esta constancia o sin detector."""
+        return self.data.get("asistencia_detector")
 
     @property
     def mode(self) -> str:
@@ -167,8 +184,9 @@ def load_run_inputs(folder: str) -> RunInputs:
     return RunInputs(folder, data, mask, zone_masks)
 
 
+# ----------------------------------------------------------------------
 # Reconstruir
-
+# ----------------------------------------------------------------------
 def build_job(
     inputs: RunInputs,
     reader,
@@ -261,4 +279,5 @@ def build_job(
         reacquirer=SilhouetteReacquirer(tracker) if (want_reacquire and mode == "silueta") else None,
         reacquire_after_frames=pick("reacquire_after_frames", reacquire_after_frames),
         reacquire_every=pick("reacquire_every", reacquire_every),
+        assistance=d.get("asistencia_detector"),  # al repetir, el sujeto ya está fijado: se conserva cómo se eligió
     )

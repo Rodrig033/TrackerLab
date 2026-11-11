@@ -379,7 +379,31 @@ Sustituye `<corrida>` y la ruta de `--entradas` por las reales (`find_runs.py` l
 
 ---
 
-## 14. Qué hace cada herramienta
+## 14. Escanear un video completo para encontrar los casos difíciles
+
+La evaluación con etiquetas (sección 13) solo cubre los frames que etiquetaste. `scan_video.py` recorre un video **entero**, una imagen por segundo, sin necesitar etiquetas, y te dice **dónde** el detector tiene problemas. Sirve para descubrir, antes de integrarlo en TrackerLab, con qué se va a topar en videos que nadie ha etiquetado.
+
+```
+python tools/scan_video.py "/Users/farid/Downloads/Grupo1R3S1.mp4" --modelo "$MODELO" --entradas "$ENTRADAS_R3S1"
+```
+
+- `--entradas`: una corrida de **ese** video (de ahí sale el ROI). Se comprueba por la huella que sea del mismo video; si no, se niega.
+- El margen del ROI se lee de las notas del modelo, igual que en `eval_detector.py`.
+- **Prueba primero con un tramo corto** (`--hasta-s 120`: los dos primeros minutos) para ver que todo va bien antes de gastar unos minutos en el video completo.
+- Se puede interrumpir con **Ctrl+C**: analiza lo que llevaba.
+- `--cada-s 0.5` (más imágenes) o `--cada-s 2` (menos). `--desde-s` y `--hasta-s` acotan el tramo.
+
+**Qué marca** (cada imagen puede llevar varias): `SIN_DETECCION`, `VARIAS` (otro candidato distinto del principal con confianza suficiente: ¿reflejo?), `CONFIANZA_BAJA`, `CAJA_RARA` (el área se sale de lo habitual en ese video), `SALTO` (el centro se movió mucho más de lo habitual) y `BORDE` (la caja toca el borde del recorte; es solo informativo). **Una marca es una alerta para mirar la imagen, no un veredicto**: el ratón puede haberse movido de verdad, o estar bajo el tubo.
+
+**Qué escribe**, en una carpeta `escaneo_<fecha>` junto a la de la corrida: `escaneo.csv` (una fila por imagen), `resumen.json` y **`casos_dificiles.png`**: los peores casos, repartidos entre los tipos de marca para que uno muy frecuente no ocupe toda la hoja. En la hoja, verde = la detección principal con confianza suficiente, amarillo = dudosa, rojo = los otros candidatos.
+
+**Cómo usar lo que encuentres:**
+- Si los fallos son oclusiones legítimas (el tubo, el ratón fuera del ROI), el seguimiento temporal los salva: no hay nada que corregir.
+- Si hay un patrón repetido (el reflejo que marca como ratón, la caja que incluye la cola), esos frames son justo los que conviene **etiquetar a mano y añadir al entrenamiento**: es la forma más eficiente de mejorar el modelo.
+
+---
+
+## 15. Qué hace cada herramienta
 
 | Herramienta | Para qué |
 |---|---|
@@ -395,5 +419,6 @@ Sustituye `<corrida>` y la ruta de `--entradas` por las reales (`find_runs.py` l
 | `tools/audit_labels.py` | hoja de auditoría de las cajas etiquetadas a mano: un recorte por caja, a la misma escala y ordenado por área (sección 11) |
 | `tools/find_runs.py` | localiza las corridas (`entradas_<fecha>`) de los videos de tus conjuntos y te imprime el comando exacto de `build_training_set.py` (sección 11) |
 | `tools/eval_detector.py` | evalúa un detector ONNX contra tus frames etiquetados a mano (mismas métricas que `eval_tracking.py`) y mide el tiempo por imagen en tu máquina (sección 13) |
+| `tools/scan_video.py` | escanea un video completo con el detector (una imagen por segundo) y marca dónde tiene problemas, con una hoja de los peores casos (sección 14) |
 | `tools/replay.py` | repite una corrida sin ventanas y escribe sus CSV |
 | `tools/check_dataset.py` | revisa el conjunto de datos automático (`dataset_<fecha>/`) |

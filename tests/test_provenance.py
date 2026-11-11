@@ -1,3 +1,13 @@
+"""Pruebas de analysis/provenance.py, del registro de opciones en el pipeline y de su integración con
+``export_tracking_csv`` de main.py.
+
+Ejecutar desde la raíz del proyecto:
+    python -m pytest tests/test_provenance.py -v
+
+La prueba de integración extrae ``export_tracking_csv`` de main.py leyendo el archivo (no lo importa:
+importar main.py cargaría Tk y pyplot) y se salta si no encuentra main.py o persistence/csv_export.py.
+"""
+
 import ast
 import builtins
 import csv
@@ -154,7 +164,43 @@ class FilasDeProcedenciaTests(unittest.TestCase):
             "calibracion_escala_cm_por_px", "calibracion_escala_px_por_cm", "calibracion_origen_xy_px",
             "calibracion_roi_x0_y0_ancho_alto_px", "calibracion_video_ancho_alto_px",
             "proc_frames_reencontrados", "calidad_veredicto"])
-        self.assertEqual(etiquetas[19:], [e for e in etiquetas if e.startswith("calidad_")][1:])
+        calidad = [e for e in etiquetas if e.startswith("calidad_")]
+        self.assertEqual(etiquetas[19:19 + len(calidad) - 1], calidad[1:])
+        # la asistencia del detector va AL FINAL: se añade sin reordenar ninguna fila anterior
+        self.assertEqual(etiquetas[19 + len(calidad) - 1:], ["proc_asistencia_detector", "proc_sujeto_elegido_por",
+                                                             "proc_sujeto_confianza_detector", "proc_detector_modelo"])
+
+    def test_asistencia_sin_detector(self):
+        d = dict_rows(provenance_rows(self.resultado(), "9.9"))
+        self.assertEqual((d["proc_asistencia_detector"], d["proc_sujeto_elegido_por"], d["proc_sujeto_confianza_detector"], d["proc_detector_modelo"]),
+                         ("ninguna", "a mano", "", ""))
+
+    def test_asistencia_con_el_sujeto_propuesto_por_el_detector(self):
+        a = {"modo": "proponer_sujeto", "sujeto": {"metodo": "detector", "confianza": 0.86, "modelo": "rfdetr-small.onnx"}}
+        d = dict_rows(provenance_rows(self.resultado(assistance=a), "9.9"))
+        self.assertEqual((d["proc_asistencia_detector"], d["proc_sujeto_elegido_por"], d["proc_sujeto_confianza_detector"], d["proc_detector_modelo"]),
+                         ("proponer_sujeto", "detector", "0.8600", "rfdetr-small.onnx"))
+
+    def test_asistencia_con_la_propuesta_rechazada_o_sin_deteccion(self):
+        a = {"modo": "proponer_sujeto", "sujeto": {"metodo": "manual", "confianza": 0.62, "modelo": "rfdetr-small.onnx"}}
+        d = dict_rows(provenance_rows(self.resultado(assistance=a), "9.9"))
+        self.assertEqual((d["proc_sujeto_elegido_por"], d["proc_sujeto_confianza_detector"]), ("a mano", "0.6200"))  # consta lo que proponía
+        a = {"modo": "proponer_sujeto", "sujeto": {"metodo": "manual", "confianza": None, "modelo": "rfdetr-small.onnx"}}
+        self.assertEqual(dict_rows(provenance_rows(self.resultado(assistance=a), "9.9"))["proc_sujeto_confianza_detector"], "")
+        a = {"modo": "proponer_sujeto", "sujeto": {"metodo": "detector", "confianza": True}}  # un booleano no es una confianza
+        self.assertEqual(dict_rows(provenance_rows(self.resultado(assistance=a), "9.9"))["proc_sujeto_confianza_detector"], "")
+
+    def test_resultados_anteriores_a_la_constancia(self):
+        import types
+        res = self.resultado()
+        viejo = types.SimpleNamespace(settings={k: v for k, v in res.settings.items() if k != "asistencia_detector"}, frames_reacquired=0,
+                                      records=res.records, timing=res.timing)
+        etiquetas = [r[0] for r in provenance_rows(viejo, "9.9")]
+        self.assertEqual(etiquetas[-1], "proc_asistencia_detector")
+        self.assertEqual(dict_rows(provenance_rows(viejo, "9.9"))["proc_asistencia_detector"], "no registrada")
+        self.assertEqual(sum(1 for e in etiquetas if e.startswith(("proc_sujeto", "proc_detector"))), 0)
+        sin_nada = types.SimpleNamespace(settings={}, frames_reacquired=0, records=None, timing=res.timing)
+        self.assertFalse(any("asistencia" in r[0] for r in provenance_rows(sin_nada, "9.9")))  # sin opciones registradas, no se inventa nada
 
     def test_valores_y_formato(self):
         d = dict_rows(provenance_rows(self.resultado(), "9.9"))

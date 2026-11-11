@@ -1,31 +1,3 @@
-#!/usr/bin/env python3
-"""Evalúa un detector ONNX (el que exporta el cuaderno de Colab) contra frames etiquetados a mano.
-
-Usa LAS MISMAS métricas y la misma tabla que tools/eval_tracking.py, así el resultado del detector se compara directamente con
-el del seguimiento clásico sobre los mismos frames. Además mide el TIEMPO POR IMAGEN en esta máquina.
-
-Uso (desde la raíz del proyecto; hace falta ``pip install onnxruntime`` en el entorno):
-    python tools/eval_detector.py "<validacion>" --modelo "<modelo.onnx>" --entradas "<carpeta entradas_...>"
-
-  * ``<validacion>``: carpeta hecha con tools/sample_frames.py y etiquetada con tools/label_frames.py (por ejemplo la de tu
-    video RESERVADO). No hace falta el video: se leen sus imágenes.
-  * ``--modelo``: el ``.onnx``. Se puede repetir para comparar varios (por ejemplo small y nano) en la misma tabla.
-  * ``--entradas``: carpeta ``entradas_<fecha>`` de una corrida de ESE video; de ahí sale el ROI. El detector se usa sobre el
-    recorte del ROI, que es como se entrenó. Con ``--sin-recorte`` se usa el frame completo.
-
-Detalles que importan:
-  * MARGEN DEL ROI. El modelo se entrenó con un recorte al ROI con cierto margen (``--margen-roi`` al armar el conjunto).
-    Al usarlo debe ser el MISMO. El cuaderno guarda ese margen dentro del ONNX (notas); si no pasas ``--margen-roi``, se lee de
-    ahí. Si lo pasas, manda lo que pases.
-  * Se toma la detección de MAYOR confianza (un solo ratón). Un frame «sin ratón» con una detección cuenta como falso positivo.
-  * La posición que se evalúa es el centro de la caja del detector.
-  * El tiempo por imagen incluye recortar, preparar, correr el modelo y decodificar; se descartan las primeras imágenes
-    (la primera inferencia es más lenta). Es el tiempo de ESTA máquina y de este número de hilos.
-
-Escribe ``resultados.json``, ``por_frame.csv`` y ``fallos.png`` en una carpeta ``evaluacion_detector_<fecha>`` dentro de la de
-validación (o en ``--salida``). Código de salida: 0 = evaluado, 2 = no se pudo.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -76,6 +48,20 @@ def read_notes(sesion: Any) -> Dict[str, Any]:
         return datos if isinstance(datos, dict) else {}
     except Exception:  # un ONNX sin metadatos, o con metadatos raros, no impide evaluar
         return {}
+
+
+def resolve_margin(notas: Dict[str, Any], margen_roi: Optional[int], sin_recorte: bool) -> Tuple[int, str]:
+    """Margen del ROI con que se usa el modelo, y de dónde sale. Lo que se pase manda; si no, el de las notas del modelo; si no, 0.
+
+    Con frame completo no hay margen. Es la ÚNICA regla: la usan eval_detector.py y scan_video.py.
+    """
+    if sin_recorte:
+        return 0, "no aplica (frame completo)"
+    if margen_roi is not None:
+        return margen_roi, "indicado con --margen-roi"
+    if isinstance(notas.get("margen_roi_px"), int):
+        return notas["margen_roi_px"], "leído de las notas del modelo"
+    return 0, "por omisión (el modelo no trae notas)"
 
 
 def timing_stats(ms: Sequence[float], descartar: int = WARMUP) -> Dict[str, Optional[float]]:
@@ -245,14 +231,7 @@ def run(
             out(f"No se pudo abrir el modelo {ruta}: {exc}")
             continue
         notas = read_notes(sesion)
-        if sin_recorte:
-            margen, origen = 0, "no aplica (frame completo)"
-        elif margen_roi is not None:
-            margen, origen = margen_roi, "indicado con --margen-roi"
-        elif isinstance(notas.get("margen_roi_px"), int):
-            margen, origen = notas["margen_roi_px"], "leído de las notas del modelo"
-        else:
-            margen, origen = 0, "por omisión (el modelo no trae notas)"
+        margen, origen = resolve_margin(notas, margen_roi, sin_recorte)
         if notas.get("recorte_roi") is False and not sin_recorte:
             out(f"AVISO ({nombre}): este modelo se entrenó con frames completos, no con recorte al ROI; quizá debas usar --sin-recorte.")
         out(f"\nModelo {nombre}: margen del ROI {margen} px ({origen})" + (f"; notas: {json.dumps(notas, ensure_ascii=False)}" if notas else ""))

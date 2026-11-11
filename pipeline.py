@@ -38,9 +38,41 @@ RoiBox = Tuple[int, int, int, int]  # (x0, y0, w0, h0) del ROI dentro del frame
 _SAMPLE_FIELDS = tuple(f.name for f in dataclasses.fields(KinematicSample))
 
 
+# ----------------------------------------------------------------------
 # Entrada
+# ----------------------------------------------------------------------
 @dataclass
 class TrackingJob:
+    """Todo lo necesario para una corrida, ya preparado (sin JSON ni diálogos).
+
+    Los primeros campos son los de siempre. Los de filtrado son opcionales: sus valores por defecto
+    reproducen el comportamiento actual de la aplicación.
+
+    reader:       video ya abierto (no se cierra aquí).
+    frame_range:  segmento a procesar (inicio y fin inclusivos).
+    timing:       ``compute_timing(...)``: frame_step, dt y FPS.
+    tracker:      tracker ya construido y calibrado (aún sin iniciar).
+    roi_box:      (x0, y0, w0, h0) del ROI en el frame completo.
+    zones:        ``ZoneGeometry`` con máscaras del FRAME COMPLETO (no del recorte).
+    cm_per_px:    escala, o None.
+    xy_origin:    origen (ox, oy) en píxeles de imagen, o None.
+    start:        (centro, caja) iniciales EN COORDENADAS DEL ROI (obligatorio en modo fondo).
+
+    smoothing_alpha:      factor del suavizado exponencial (0 < alpha <= 1); None = sin suavizar.
+    jump_max_px:          salto máximo (px) entre dos frames PROCESADOS; None = sin rechazo de saltos.
+    jump_max_speed_px_s:  alternativa: velocidad máxima (px/s). Si se da, el salto máximo es
+                          ``velocidad * dt``, así que no depende de ``frame_step`` ni de los FPS.
+    recovery_after:       frames sin dato tras los cuales se acepta una detección cercana.
+    recovery_distance_px: "cercana" = a esta distancia o menos de la última posición válida.
+    adopt_after_s:        segundos de detecciones consistentes tras los cuales se adopta una
+                          posición lejana; None = nunca (comportamiento anterior, con atascos).
+    reacquirer:           buscador del sujeto en todo el ROI (None = apagado; ver tracking.reacquisition).
+    reacquire_after_frames: frames seguidos sin posición válida antes de la primera búsqueda.
+    reacquire_every:      cada cuántos frames se repite la búsqueda mientras siga sin encontrarse.
+    assistance:           constancia de la asistencia del detector (detection.subject.assistance_record), o None.
+                          Solo se registra: no cambia el seguimiento.
+    """
+
     reader: VideoReader
     frame_range: FrameRange
     timing: TrackingTiming
@@ -59,9 +91,12 @@ class TrackingJob:
     reacquirer: Optional[Reacquirer] = None
     reacquire_after_frames: int = 3
     reacquire_every: int = 5
+    assistance: Optional[Dict[str, Any]] = None
 
 
+# ----------------------------------------------------------------------
 # Órdenes que la interfaz puede devolver desde ``on_frame``
+# ----------------------------------------------------------------------
 @dataclass(frozen=True)
 class Quit:
     """Detener el tracking (tecla 'q')."""
@@ -88,7 +123,9 @@ class Reinit:
 Command = Union[Quit, Reinit, RecaptureBackground]
 
 
+# ----------------------------------------------------------------------
 # Salida
+# ----------------------------------------------------------------------
 @dataclass(frozen=True, eq=False)
 class FrameEvent:
     """Lo que recibe ``on_frame`` en cada frame. ``frame`` es de SOLO LECTURA: copiarlo para dibujar.
@@ -140,7 +177,9 @@ def _mode_name(tracker: BaseTracker) -> str:
     return type(tracker).__name__
 
 
+# ----------------------------------------------------------------------
 # Validación e inicio
+# ----------------------------------------------------------------------
 def _validate(job: TrackingJob) -> None:
     x0, y0, w0, h0 = job.roi_box
     if w0 <= 0 or h0 <= 0 or x0 < 0 or y0 < 0:
@@ -189,7 +228,9 @@ def _start_tracker(job: TrackingJob, roi_start: np.ndarray, warnings: List[str])
         tr.reset(*job.start)
 
 
+# ----------------------------------------------------------------------
 # Órdenes
+# ----------------------------------------------------------------------
 def _apply_reinit(tr: BaseTracker, cmd: Reinit, roi: np.ndarray, warnings: List[str]) -> None:
     if cmd.center is not None and cmd.bbox is None:
         raise ValueError("Reinit con center necesita también bbox.")
@@ -216,8 +257,9 @@ def _recapture_background(job: TrackingJob, frame_idx: int, warnings: List[str])
         tr.set_background(bg)
 
 
-
+# ----------------------------------------------------------------------
 # Bucle principal
+# ----------------------------------------------------------------------
 def run_tracking(
     job: TrackingJob,
     on_frame: Optional[Callable[[FrameEvent], Optional[Command]]] = None,
@@ -225,6 +267,14 @@ def run_tracking(
     keep_records: bool = False,
     log: Optional[Callable[[str], None]] = print,
 ) -> TrackingResult:
+    """Ejecuta el seguimiento sobre el segmento del video indicado.
+
+    on_frame:  se llama tras cada frame; puede devolver un ``Command``.
+    on_record: se llama con cada ``FrameRecord`` ANTES que ``on_frame`` (CSV fila por fila).
+    keep_records: guarda los registros en ``result.records``.
+    log:       recibe los mensajes informativos (por omisión ``print``, como antes); None = en silencio.
+               Los mensajes importantes también quedan en ``result.warnings``.
+    """
     _validate(job)
     x0, y0, w0, h0 = job.roi_box
     rng, timing, tracker = job.frame_range, job.timing, job.tracker
@@ -259,6 +309,8 @@ def run_tracking(
         "origen_xy_px": [float(v) for v in job.xy_origin] if job.xy_origin is not None else None,
         "roi_box": [int(v) for v in job.roi_box],
         "video_tamano_px": [int(job.reader.width), int(full_height)],
+        # Asistencia del detector (independiente del modo): cómo se eligió al sujeto, con qué modelo y confianza
+        "asistencia_detector": job.assistance,
     }
 
     warnings: List[str] = []
