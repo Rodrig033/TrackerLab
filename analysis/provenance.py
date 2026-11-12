@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from typing import Any, List, Optional
 
 from analysis.quality import assess_quality, quality_rows
@@ -49,6 +48,21 @@ def _assistance_rows(s) -> List[List[Any]]:
     ]
 
 
+def _corrector_rows(s) -> List[List[Any]]:
+    """Tecolote como corrector: si corrigió y cuánto. Resultados anteriores a esta función: sin filas."""
+    if "tecolote_corrector" not in s:
+        return []
+    if not s.get("tecolote_corrector"):
+        return [["proc_tecolote_corrige", "no"]]
+    return [
+        ["proc_tecolote_corrige", "sí"],
+        ["proc_tecolote_cada_frames", s.get("tecolote_cada_frames", "")],
+        ["proc_tecolote_mediciones", s.get("tecolote_mediciones", "")],
+        ["proc_tecolote_correcciones", s.get("tecolote_correcciones", "")],
+        ["proc_tecolote_reubicaciones", s.get("tecolote_reubicaciones", "")],
+    ]
+
+
 def provenance_rows(result, app_version: str) -> List[List[Any]]:
     """Filas ``[metrica, valor]`` para añadir al final del resumen.
 
@@ -84,4 +98,5 @@ def provenance_rows(result, app_version: str) -> List[List[Any]]:
         rows.append(["calidad_veredicto", "no calculado (no se guardaron los registros por frame)"])
     if s:
         rows += _assistance_rows(s)  # al FINAL: las filas nuevas se añaden, nunca reordenan las existentes
+        rows += _corrector_rows(s)
     return rows

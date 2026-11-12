@@ -23,7 +23,7 @@ __all__ = ["SCHEMA", "KEEP", "RunInputs", "save_run_inputs", "load_run_inputs", 
 SCHEMA = 1
 #: Opciones del launcher que se graban (el resto, como el ``root`` de Tk, no es serializable ni hace falta).
 OPTION_KEYS = ("exp_name", "csv_base_name", "custom_tracking_fps", "tracking_fps", "tracking_mode",
-               "polarity", "apply_bw", "use_clahe", "mutually_exclusive_zones")
+               "polarity", "apply_bw", "use_clahe", "mutually_exclusive_zones", "tecolote_mode", "tecolote_every_s")
 PIPELINE_KEYS = ("smoothing_alpha", "jump_max_px", "jump_max_speed_px_s", "recovery_after", "recovery_distance_px",
                  "adopt_after_s", "reacquire_after_frames", "reacquire_every")
 
@@ -64,9 +64,7 @@ def _read_png(path: str) -> np.ndarray:
     return img
 
 
-# ----------------------------------------------------------------------
 # Grabar
-# ----------------------------------------------------------------------
 def save_run_inputs(
     base_dir: str,
     job: TrackingJob,
@@ -78,15 +76,7 @@ def save_run_inputs(
     log: Optional[Callable[[str], None]] = print,
     now: Optional[Callable[[], datetime]] = None,
 ) -> Optional[str]:
-    """Graba las entradas de ``job`` en ``<base_dir>/entradas_<fecha>/``. Devuelve la carpeta, o None si falló.
-
-    NUNCA lanza una excepción: un fallo al grabar (disco lleno, permisos...) se avisa y el seguimiento continúa.
-
-    Debe llamarse ANTES de ``run_tracking`` (como hace main.py): durante la corrida el modelo de silueta se
-    actualiza, y lo que se graba es el modelo INICIAL, que es el que ``build_job`` reconstruye y comprueba.
-
-    sample_idx: frame de referencia con el que se dibujó el ROI, se eligió al sujeto y se calculó el fondo.
-    """
+    
     say = log if log is not None else (lambda _m: None)
     try:
         tr = job.tracker
@@ -132,6 +122,7 @@ def save_run_inputs(
             "pipeline": {**{k: getattr(job, k) for k in PIPELINE_KEYS},
                          "reacquirer": type(job.reacquirer).__name__ if job.reacquirer is not None else None},
             "asistencia_detector": _plain(getattr(job, "assistance", None)),
+            "tecolote_corrector": _corrector_spec(job),
         }
         with open(os.path.join(folder, "inputs.json"), "w", encoding="utf-8") as f:
             json.dump(_plain(data), f, indent=2, ensure_ascii=False)
@@ -187,10 +178,22 @@ def load_run_inputs(folder: str) -> RunInputs:
 # ----------------------------------------------------------------------
 # Reconstruir
 # ----------------------------------------------------------------------
+def _corrector_spec(job: TrackingJob) -> Optional[Dict[str, Any]]:
+    """Lo necesario para volver a crear a Tecolote como corrector al repetir la corrida (o None si no corregía)."""
+    c = getattr(job, "corrector", None)
+    if c is None:
+        return None
+    det = getattr(c, "detector", None)
+    return {"modelo_ruta": getattr(det, "model_path", None), "confianza_minima": getattr(c, "min_score", None),
+            "cada_s": job.correct_every_s, "desvio_max_relativo": job.correct_max_offset_ratio, "desvio_caduca_s": job.correct_offset_max_age_s}
+
+
 def build_job(
     inputs: RunInputs,
     reader,
     *,
+    corrector: Any = KEEP,
+    correct_every_s: Any = KEEP,
     smoothing_alpha: Any = KEEP,
     jump_max_px: Any = KEEP,
     jump_max_speed_px_s: Any = KEEP,
@@ -206,6 +209,8 @@ def build_job(
     """Reconstruye el ``TrackingJob`` de la corrida grabada sobre ``reader`` (un ``VideoReader`` ya abierto).
 
     Cada opción por omisión conserva lo grabado; ``None`` apaga la etapa (por ejemplo ``smoothing_alpha=None``).
+    ``corrector``: por omisión, si la corrida se grabó con Tecolote corrigiendo, se vuelve a crear con el mismo modelo (lanza
+    DetectorError si el modelo ya no está); ``None`` lo quita; un corrector (detection.corrector) lo pone.
     ``reacquire=True/False`` enciende o apaga la búsqueda del sujeto (solo modo silueta).
     strict: si el modelo de silueta reconstruido no coincide con el grabado, lanza ``ValueError`` (False = solo continúa).
     """
@@ -258,6 +263,20 @@ def build_job(
     def pick(name: str, value: Any) -> Any:
         return pipe[name] if value is KEEP else value
 
+    spec_c = d.get("tecolote_corrector")
+    if corrector is KEEP:
+        if spec_c:
+            from detection.corrector import make_corrector
+            corrector = make_corrector(spec_c["modelo_ruta"], spec_c["confianza_minima"])
+        else:
+            corrector = None
+    extra_c: Dict[str, Any] = {}
+    if spec_c:
+        extra_c = {"correct_max_offset_ratio": spec_c["desvio_max_relativo"], "correct_offset_max_age_s": spec_c["desvio_caduca_s"],
+                   "correct_every_s": spec_c["cada_s"]}
+    if correct_every_s is not KEEP:
+        extra_c["correct_every_s"] = correct_every_s
+
     want_reacquire = (pipe.get("reacquirer") is not None) if reacquire is KEEP else bool(reacquire)
     zones = [ZoneGeometry(z["name"], m, tuple(z["centroid"])) for z, m in zip(d["zones"], inputs.zone_masks)]
     return TrackingJob(
@@ -279,5 +298,7 @@ def build_job(
         reacquirer=SilhouetteReacquirer(tracker) if (want_reacquire and mode == "silueta") else None,
         reacquire_after_frames=pick("reacquire_after_frames", reacquire_after_frames),
         reacquire_every=pick("reacquire_every", reacquire_every),
-        assistance=d.get("asistencia_detector"),  # al repetir, el sujeto ya está fijado: se conserva cómo se eligió
+        assistance=d.get("asistencia_detector"),
+        corrector=corrector,
+        **extra_c,  # al repetir, el sujeto ya está fijado: se conserva cómo se eligió
     )

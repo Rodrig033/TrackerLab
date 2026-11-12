@@ -63,7 +63,7 @@ def key_to_choice(key: int) -> Optional[str]:
     return None
 
 
-def confirm_subject(sample_roi: np.ndarray, bbox: IntBox, score: float, title: str = "SUJETO PROPUESTO POR EL DETECTOR") -> str:
+def confirm_subject(sample_roi: np.ndarray, bbox: IntBox, score: float, title: str = "SUJETO PROPUESTO POR TECOLOTE") -> str:
     """Muestra la propuesta y espera la decisión. Cerrar la ventana equivale a «marcar a mano»."""
     cv2.namedWindow(title, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(title, 1200, 800)
@@ -81,24 +81,27 @@ def confirm_subject(sample_roi: np.ndarray, bbox: IntBox, score: float, title: s
         cv2.destroyWindow(title)
 
 
-def assistance_record(model_path: Optional[str], info: Dict[str, Any]) -> Dict[str, Any]:
-    """Constancia de la asistencia del detector en una corrida: qué hizo (``modo``) y cómo se eligió al sujeto.
+def assistance_record(model_path: Optional[str], info: Dict[str, Any], corrige: bool = False) -> Dict[str, Any]:
+    """Constancia de la asistencia de Tecolote en una corrida: qué hizo (``modo``) y cómo se eligió al sujeto.
 
     Va dentro del TrackingJob y de ahí a inputs.json, a result.settings y al resumen. Es independiente del modo de seguimiento.
+    ``corrige``: si además corrigió al seguimiento durante la corrida (nivel «proponer y corregir»).
     """
-    return {"modo": "proponer_sujeto" if model_path else "ninguna", "sujeto": dict(info)}
+    modo = "ninguna" if not model_path else ("proponer_y_corregir" if corrige else "proponer_sujeto")
+    return {"modo": modo, "sujeto": dict(info)}
 
 
 def describe_assistance(record: Optional[Dict[str, Any]], mode: str = "") -> str:
     """Una línea para la terminal: el modo de seguimiento y, aparte, la asistencia del detector."""
     pre = f"Modo: {mode} · " if mode else ""
     if not record or record.get("modo") in (None, "ninguna"):
-        return pre + "asistencia del detector: ninguna (sujeto marcado a mano)"
+        return pre + "Tecolote: apagado (sujeto marcado a mano)"
     s = record.get("sujeto") or {}
     conf = f", confianza {s['confianza']:.2f}" if isinstance(s.get("confianza"), (int, float)) else ""
-    quien = {"detector": "sujeto propuesto por el detector y aceptado", "manual": "sujeto marcado a mano", "cancelado": "cancelado"}.get(s.get("metodo"), str(s.get("metodo")))
+    quien = {"detector": "sujeto propuesto por Tecolote y aceptado", "manual": "sujeto marcado a mano", "cancelado": "cancelado"}.get(s.get("metodo"), str(s.get("metodo")))
     motivo = f" ({s['motivo']})" if s.get("metodo") != "detector" and s.get("motivo") else ""
-    return pre + f"asistencia del detector: proponer sujeto · {quien}{motivo} · modelo {s.get('modelo') or '?'}{conf}"
+    nivel = "proponer y corregir" if record.get("modo") == "proponer_y_corregir" else "proponer sujeto"
+    return pre + f"Tecolote: {nivel} · {quien}{motivo} · modelo {s.get('modelo') or '?'}{conf}"
 
 
 def choose_subject(
@@ -128,15 +131,15 @@ def choose_subject(
         notas = getattr(detector, "notes", {}) or {}
         info["notas_modelo"] = {k: notas[k] for k in ("corrida", "modelo", "version_rfdetr", "resolucion") if k in notas}
     except Exception as exc:  # frontera con la interfaz: pase lo que pase con el modelo, la persona puede seguir a mano
-        out(f"Detector no disponible ({exc}). Selecciona el sujeto a mano.")
+        out(f"Tecolote no está disponible ({exc}). Selecciona el sujeto a mano.")
         return a_mano(f"detector no disponible: {exc}")
     bbox = box_in_roi(det, roi_box) if det is not None else None
     if det is None or bbox is None:
-        out(f"El detector no encontró al ratón en el frame de muestra (confianza mínima {detector.threshold:g}). Selecciónalo a mano.")
+        out(f"Tecolote no encontró al ratón en el frame de muestra (confianza mínima {detector.threshold:g}). Selecciónalo a mano.")
         return a_mano("el detector no encontró al sujeto")
     info["confianza"] = round(det.score, 4)
     info["caja_propuesta"] = list(bbox)  # en coordenadas del recorte del ROI, aunque luego se marque a mano
-    out(f"El detector propone al sujeto con confianza {det.score:.2f}" + ("." if det.score >= CONFIANZA_ALTA else " (baja: revisa bien la caja)."))
+    out(f"Tecolote propone al sujeto con confianza {det.score:.2f}" + ("." if det.score >= CONFIANZA_ALTA else " (baja: revisa bien la caja)."))
     x, y, w, h = (int(v) for v in roi_box)
     decision = confirm(sample_frame[y:y + h, x:x + w], bbox, det.score)
     if decision == ACEPTAR:

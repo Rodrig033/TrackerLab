@@ -30,7 +30,9 @@ ST_FP = "falso positivo"
 ST_TN = "sin raton: bien"
 
 
+# ----------------------------------------------------------------------
 # Etiquetas
+# ----------------------------------------------------------------------
 def parse_label_file(path: str, frame_w: int, frame_h: int) -> Tuple[str, Optional[Box]]:
     """Lee una etiqueta YOLO. Devuelve (estado, caja): ``caja`` | ``vacio`` | ``varias`` | ``invalida``."""
     with open(path, encoding="utf-8-sig") as fh:
@@ -89,7 +91,9 @@ def collect_truths(valdir: str, manifest: Dict[str, Any], faltantes_sin_raton: b
     return truths, info
 
 
+# ----------------------------------------------------------------------
 # Evaluación (pura: no abre videos)
+# ----------------------------------------------------------------------
 @dataclass(frozen=True)
 class Pred:
     """Lo que dijo el seguimiento en un frame: caja del tracker y posición que queda en el CSV (px de imagen, y hacia abajo)."""
@@ -177,8 +181,11 @@ def merge_scored(rows_lists: Sequence[List[Dict[str, Any]]], iou_thr: float) -> 
     return s
 
 
+# ----------------------------------------------------------------------
 # Correr el seguimiento sobre los frames etiquetados
+# ----------------------------------------------------------------------
 def predict_frames(carpeta: str, video_path: str, frames: Sequence[int], overrides: Dict[str, Any]) -> Tuple[Dict[int, Pred], Dict[str, Any]]:
+    # Con Tecolote, sus mediciones se reparten en el tiempo: la corrida se repite completa hasta el último frame pedido.
     """Repite la corrida grabada y devuelve lo que dijo el seguimiento en cada frame pedido que se procesó."""
     inputs = load_run_inputs(carpeta)
     pend = set(int(f) for f in frames)
@@ -254,8 +261,9 @@ def match_video(manifest: Dict[str, Any], inputs_data: Dict[str, Any]) -> Option
     return None
 
 
-
+# ----------------------------------------------------------------------
 # Salidas
+# ----------------------------------------------------------------------
 def _fmt(v: Optional[float], dec: int = 1, suf: str = "") -> str:
     return "-" if v is None else f"{v:.{dec}f}{suf}"
 
@@ -336,10 +344,13 @@ def write_failure_sheet(path: str, rows: List[Dict[str, Any]], valdir: str, mani
     return bool(cv2.imwrite(path, np.vstack(filas)))
 
 
+# ----------------------------------------------------------------------
 # Programa principal
+# ----------------------------------------------------------------------
 def run(valdir: str, entradas: Sequence[str], *, iou_thr: float = 0.5, salida: Optional[str] = None, sin_filtros: bool = False,
         sin_busqueda: bool = False, faltantes_sin_raton: bool = False, hoja_fallos: int = 12, out: Callable[[str], None] = print,
-        now: Optional[Callable[[], datetime]] = None) -> int:
+        now: Optional[Callable[[], datetime]] = None, tecolote: Optional[str] = None, sin_tecolote: bool = False,
+        tecolote_cada_s: Optional[float] = None, corrector_factory: Optional[Callable[[str], Any]] = None) -> int:
     if not entradas:
         out("Indica al menos una corrida con --entradas \"<carpeta entradas_...>\".")
         return 2
@@ -365,6 +376,26 @@ def run(valdir: str, entradas: Sequence[str], *, iou_thr: float = 0.5, salida: O
         overrides.update(smoothing_alpha=None, jump_max_px=None, jump_max_speed_px_s=None)
     if sin_busqueda:
         overrides["reacquire"] = False
+    if tecolote and sin_tecolote:
+        out("Usa --tecolote o --sin-tecolote, no los dos.")
+        return 2
+    if tecolote_cada_s is not None and not tecolote_cada_s > 0:
+        out("--tecolote-cada-s debe ser mayor que 0.")
+        return 2
+    variante = ""
+    if sin_tecolote:
+        overrides["corrector"], variante = None, " sin Tecolote"
+    elif tecolote:
+        try:
+            if corrector_factory is None:
+                from detection.corrector import make_corrector as corrector_factory  # type: ignore[no-redef]
+            overrides["corrector"] = corrector_factory(tecolote)
+        except Exception as exc:  # el modelo no existe, no abre o falta onnxruntime: se explica y no se evalúa a medias
+            out(f"No se pudo preparar a Tecolote con {tecolote}: {exc}")
+            return 2
+        variante = " + Tecolote"
+    if tecolote_cada_s is not None:
+        overrides["correct_every_s"] = tecolote_cada_s
 
     corridas: List[Dict[str, Any]] = []
     todas_filas: List[Dict[str, Any]] = []
@@ -415,7 +446,7 @@ def run(valdir: str, entradas: Sequence[str], *, iou_thr: float = 0.5, salida: O
         c["nombre"] = nombre
         for r in c["_rows"]:
             r["corrida"] = nombre
-    tabla = [(f"{c['nombre'][:30]} · {c['modo']}", c["resumen"]) for c in corridas]
+    tabla = [(f"{c['nombre'][:30]} · {c['modo']}{variante}", c["resumen"]) for c in corridas]
     por_modo: Dict[str, List[List[Dict[str, Any]]]] = {}
     for c in corridas:
         por_modo.setdefault(c["modo"], []).append(c["_rows"])
@@ -424,13 +455,15 @@ def run(valdir: str, entradas: Sequence[str], *, iou_thr: float = 0.5, salida: O
         tabla += [(f"TOTAL {m}", s) for m, s in resumen_modos.items()]
     out("\n" + format_table(tabla))
     out(f"\nFiltros: {'apagados (--sin-filtros)' if sin_filtros else 'los de la corrida'}. Umbral de IoU: {iou_thr:g}.")
+    if tecolote:
+        out(f"Tecolote corrigiendo con {os.path.basename(tecolote)}" + (f", cada {tecolote_cada_s:g} s." if tecolote_cada_s else ", cada 0.5 s (lo de omisión)."))
 
     stamp = (now or datetime.now)().strftime("%Y%m%d_%H%M%S")
     salida = salida or os.path.join(valdir, f"evaluacion_{stamp}")
     os.makedirs(salida, exist_ok=True)
     limpio = [{k: v for k, v in c.items() if k != "_rows"} for c in corridas]
     with open(os.path.join(salida, "resultados.json"), "w", encoding="utf-8") as fh:
-        json.dump({"iou": iou_thr, "sin_filtros": sin_filtros, "etiquetas": {k: (v if not isinstance(v, list) else len(v)) for k, v in info.items()},
+        json.dump({"iou": iou_thr, "sin_filtros": sin_filtros, "tecolote": tecolote, "sin_tecolote": sin_tecolote, "tecolote_cada_s": tecolote_cada_s, "etiquetas": {k: (v if not isinstance(v, list) else len(v)) for k, v in info.items()},
                    "corridas": limpio, "por_modo": resumen_modos}, fh, ensure_ascii=False, indent=2)
     write_csv(os.path.join(salida, "por_frame.csv"), todas_filas)
     if hoja_fallos > 0 and write_failure_sheet(os.path.join(salida, "fallos.png"), todas_filas, valdir, manifest, hoja_fallos):
@@ -449,9 +482,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--sin-busqueda", action="store_true", help="evalúa sin la búsqueda del sujeto (modo silueta)")
     ap.add_argument("--faltantes-sin-raton", action="store_true", help="una etiqueta que no existe cuenta como «sin ratón»")
     ap.add_argument("--hoja-fallos", type=int, default=12, help="cuántos fallos mostrar en fallos.png (0 = ninguno)")
+    ap.add_argument("--tecolote", metavar="MODELO", help="repite la corrida con Tecolote corrigiendo al seguimiento (ruta del .onnx)")
+    ap.add_argument("--sin-tecolote", action="store_true", help="repite la corrida SIN Tecolote, aunque se haya grabado con él")
+    ap.add_argument("--tecolote-cada-s", type=float, help="cada cuántos segundos mide Tecolote (por omisión 0.5)")
     a = ap.parse_args(argv)
     return run(a.validacion, a.entradas, iou_thr=a.iou, salida=a.salida, sin_filtros=a.sin_filtros, sin_busqueda=a.sin_busqueda,
-               faltantes_sin_raton=a.faltantes_sin_raton, hoja_fallos=a.hoja_fallos)
+               faltantes_sin_raton=a.faltantes_sin_raton, hoja_fallos=a.hoja_fallos, tecolote=a.tecolote, sin_tecolote=a.sin_tecolote,
+               tecolote_cada_s=a.tecolote_cada_s)
 
 
 if __name__ == "__main__":

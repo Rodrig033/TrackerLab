@@ -368,11 +368,12 @@ class NumeracionDelPipelineTests(Base):
         val = self.conjunto([50, 62, 74, 86], rango=(40, 119))
         self.assertEqual(self.offsets(val), {50: 0, 62: 0, 74: 0, 86: 0})
 
-    def test_mide_contra_la_numeracion_del_pipeline_aunque_su_salto_inicial_este_corrido(self):
-        # La corrida empieza en 42: su salto cae en 44, así que el frame «50» del pipeline es realmente el 52.
-        # Las imágenes que saca el muestreador (de esa misma lectura) son ese contenido: deben contar como alineadas.
+    def test_un_conjunto_sacado_con_la_lectura_corrida_de_antes_ahora_se_ve_desfasado(self):
+        # ANTES el recorrido del pipeline podía heredar un salto corrido (a 42 caía en 44: su «frame 50» era el 52), y un conjunto
+        # muestreado con esa misma lectura «coincidía» con él. AHORA iter_frames llega de corrido y es exacto aunque read_at salte
+        # corrido: esas imágenes viejas (contenido 52 rotulado «50») se ven desfasadas +2, que es la verdad respecto al video.
         val = self.conjunto([50, 62, 74, 86], rango=(42, 119), desfase_stream=2)
-        self.assertEqual(self.offsets(val), {50: 0, 62: 0, 74: 0, 86: 0})
+        self.assertEqual(self.offsets(val), {50: 2, 62: 2, 74: 2, 86: 2})
 
     def test_sin_rango_en_el_manifiesto_se_empieza_cerca_de_la_primera_imagen(self):
         val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {50: 0, 70: 0}, W, H)  # sin «rango»
@@ -431,3 +432,142 @@ class ConsistenciaConElRestoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ======================================================================
+class ComoLaLeyoUnaCorridaTests(Base):
+    """--entradas: el video se lee como lo leyó esa corrida (desde SU inicio). Detecta un salto inicial impreciso."""
+
+    FRAMES = [40, 55, 70, 85, 100]
+
+    def entradas(self, inicio, fin, nombre="bits.avi", huella=None):
+        d = os.path.join(self.work.name, f"entradas_{inicio}_{fin}")
+        os.makedirs(d, exist_ok=True)
+        video = {"path": os.path.join("/otra/carpeta", nombre)}
+        if huella:
+            video["sha256_extremos"] = huella
+        with open(os.path.join(d, "inputs.json"), "w", encoding="utf-8") as fh:
+            json.dump({"frame_range": {"start": inicio, "end": fin}, "video": video}, fh)
+        return d
+
+    def lector_que_cae_corrido(self, k):
+        """Un lector que, al saltar a un inicio > 0, cae k frames DESPUÉS (lo que hace a veces un mp4)."""
+        frames = self.bits_frames
+
+        class Lector:
+            def __init__(self, path):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_frames(self, start, end, step):
+                corr = k if start > 0 else 0
+                for idx in range(start, min(end, len(frames) - 1 - corr) + 1, step):
+                    yield idx, frames[idx + corr]
+        return Lector
+
+    def correr(self, val, **kw):
+        msgs = []
+        rc = C.run(val, out=msgs.append, **kw)
+        return rc, msgs
+
+    def test_un_salto_inicial_corrido_se_detecta(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)  # imágenes exactas
+        ent = self.entradas(30, 110)
+        with mock.patch.object(C, "VideoReader", self.lector_que_cae_corrido(3)):
+            rc, msgs = self.correr(val, entradas=ent)
+        self.assertEqual(rc, 0)
+        with open(os.path.join(val, f"alineacion_{os.path.basename(ent)}.json"), encoding="utf-8") as fh:
+            res = json.load(fh)
+        # la corrida llama «frame N» a lo que en realidad es N + 3: cada imagen se parece a su «frame N - 3»
+        self.assertEqual([r["desfase"] for r in res["imagenes"]], [-3] * 5)
+        self.assertEqual(res["resumen"]["veredicto"], "desalineado")
+        self.assertEqual(res["entradas"], ent)
+        texto = "\n".join(msgs)
+        self.assertIn("desde su frame 30", texto)
+        self.assertIn("Esa corrida vio frames corridos", texto)
+
+    def test_sin_salto_corrido_esta_alineado(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        with mock.patch.object(C, "VideoReader", self.lector_que_cae_corrido(0)):
+            self.correr(val, entradas=self.entradas(30, 110))
+        with open(os.path.join(val, "alineacion_entradas_30_110.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["resumen"]["veredicto"], "alineado")
+
+    def test_sin_entradas_se_lee_desde_el_inicio_del_conjunto_y_no_se_ve_el_problema(self):
+        """El mismo lector defectuoso, pero empezando en 0 (como el conjunto): no salta, no cae corrido. Por eso hace falta --entradas."""
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        with open(os.path.join(val, "manifest.json"), encoding="utf-8") as fh:
+            man = json.load(fh)
+        man["videos"][0]["rango"] = [0, 119]
+        with open(os.path.join(val, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump(man, fh)
+        with mock.patch.object(C, "VideoReader", self.lector_que_cae_corrido(3)):
+            self.correr(val)
+        self.assertEqual(self.resultado(val)["resumen"]["veredicto"], "alineado")
+
+    def test_el_lector_real_empieza_donde_empezo_la_corrida(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        llamadas = []
+        real = C.VideoReader
+
+        class Espia(real):
+            def iter_frames(self, start, end, step):
+                llamadas.append((start, end, step))
+                return super().iter_frames(start, end, step)
+        with mock.patch.object(C, "VideoReader", Espia):
+            rc, _ = self.correr(val, entradas=self.entradas(37, 110))
+        self.assertEqual(rc, 0)
+        self.assertEqual(llamadas[0][0], 37)  # no antes (como sin --entradas): exactamente su inicio
+        with open(os.path.join(val, "alineacion_entradas_37_110.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["resumen"]["veredicto"], "alineado")  # en AVI el salto es exacto
+
+    def test_solo_se_revisan_las_imagenes_dentro_del_rango(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in [10, 20] + self.FRAMES}, W, H)
+        rc, msgs = self.correr(val, entradas=self.entradas(30, 90))
+        with open(os.path.join(val, "alineacion_entradas_30_90.json"), encoding="utf-8") as fh:
+            self.assertEqual([r["frame"] for r in json.load(fh)["imagenes"]], [40, 55, 70, 85])
+        self.assertIn("3 imágenes de bits.avi quedan fuera del rango de la corrida (30-90); no se revisan.", "\n".join(msgs))
+
+    def test_no_se_pisa_la_alineacion_del_conjunto(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        self.correr(val)
+        with open(os.path.join(val, "alineacion.json"), encoding="utf-8") as fh:
+            antes = fh.read()
+        self.correr(val, entradas=self.entradas(30, 110))
+        with open(os.path.join(val, "alineacion.json"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), antes)
+
+    def test_una_corrida_de_otro_video(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        rc, msgs = self.correr(val, entradas=self.entradas(30, 110, nombre="otro.avi"))
+        self.assertEqual(rc, 2)
+        self.assertIn("AVISO: la corrida no es de bits.avi", "\n".join(msgs))
+
+    def test_con_huellas_manda_la_huella(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        with open(os.path.join(val, "manifest.json"), encoding="utf-8") as fh:
+            man = json.load(fh)
+        man["videos"][0]["sha256_extremos"] = "a" * 64
+        with open(os.path.join(val, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump(man, fh)
+        self.assertEqual(self.correr(val, entradas=self.entradas(30, 110, huella="b" * 64))[0], 2)  # mismo nombre, otra huella: otro video
+        self.assertEqual(self.correr(val, entradas=self.entradas(31, 110, nombre="renombrado.avi", huella="a" * 64))[0], 0)  # otro nombre, misma huella
+
+    def test_entradas_ilegibles(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        rc, msgs = self.correr(val, entradas=os.path.join(self.work.name, "no_existe"))
+        self.assertEqual(rc, 2)
+        self.assertIn("No se pudieron leer las entradas", "\n".join(msgs))
+
+    def test_cli(self):
+        val = crear_conjunto(self.work.name, self.bits, self.bits_frames, {f: 0 for f in self.FRAMES}, W, H)
+        ent = self.entradas(30, 110)
+        with mock.patch.object(C, "VideoReader", self.lector_que_cae_corrido(2)):
+            self.assertEqual(C.main([val, "--entradas", ent]), 0)
+        with open(os.path.join(val, "alineacion_entradas_30_110.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["resumen"]["desfase_mediano"], -2.0)

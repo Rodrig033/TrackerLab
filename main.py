@@ -141,6 +141,7 @@ from tracking.reacquisition import (
 )
 from learning.session import DatasetSession
 from detection.subject import assistance_record, choose_subject, describe_assistance
+from detection.tecolote import PROPONER, prepare as prepare_tecolote
 
 SILHOUETTE_BORDER_AWARE = True
 SILHOUETTE_REACQUIRE = True

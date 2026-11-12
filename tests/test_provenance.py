@@ -168,7 +168,7 @@ class FilasDeProcedenciaTests(unittest.TestCase):
         self.assertEqual(etiquetas[19:19 + len(calidad) - 1], calidad[1:])
         # la asistencia del detector va AL FINAL: se añade sin reordenar ninguna fila anterior
         self.assertEqual(etiquetas[19 + len(calidad) - 1:], ["proc_asistencia_detector", "proc_sujeto_elegido_por",
-                                                             "proc_sujeto_confianza_detector", "proc_detector_modelo"])
+                                                             "proc_sujeto_confianza_detector", "proc_detector_modelo", "proc_tecolote_corrige"])
 
     def test_asistencia_sin_detector(self):
         d = dict_rows(provenance_rows(self.resultado(), "9.9"))
@@ -190,13 +190,30 @@ class FilasDeProcedenciaTests(unittest.TestCase):
         a = {"modo": "proponer_sujeto", "sujeto": {"metodo": "detector", "confianza": True}}  # un booleano no es una confianza
         self.assertEqual(dict_rows(provenance_rows(self.resultado(assistance=a), "9.9"))["proc_sujeto_confianza_detector"], "")
 
+    def test_filas_del_corrector(self):
+        import types
+        res = self.resultado()
+        self.assertEqual(dict_rows(provenance_rows(res, "9.9"))["proc_tecolote_corrige"], "no")
+        s = dict(res.settings, tecolote_corrector={"modelo": "rfdetr-small.onnx"}, tecolote_cada_frames=7, tecolote_mediciones=120,
+                 tecolote_correcciones=110, tecolote_reubicaciones=4)
+        con = types.SimpleNamespace(settings=s, frames_reacquired=0, records=res.records, timing=res.timing)
+        filas = provenance_rows(con, "9.9")
+        self.assertEqual([r[0] for r in filas][-5:], ["proc_tecolote_corrige", "proc_tecolote_cada_frames", "proc_tecolote_mediciones",
+                                                      "proc_tecolote_correcciones", "proc_tecolote_reubicaciones"])
+        d = dict_rows(filas)
+        self.assertEqual((d["proc_tecolote_corrige"], d["proc_tecolote_cada_frames"], d["proc_tecolote_mediciones"], d["proc_tecolote_correcciones"],
+                          d["proc_tecolote_reubicaciones"]), ("sí", 7, 120, 110, 4))
+        vieja = types.SimpleNamespace(settings={k: v for k, v in res.settings.items() if k != "tecolote_corrector"}, frames_reacquired=0,
+                                      records=res.records, timing=res.timing)
+        self.assertFalse(any(r[0].startswith("proc_tecolote") for r in provenance_rows(vieja, "9.9")))  # anteriores: sin filas
+
     def test_resultados_anteriores_a_la_constancia(self):
         import types
         res = self.resultado()
         viejo = types.SimpleNamespace(settings={k: v for k, v in res.settings.items() if k != "asistencia_detector"}, frames_reacquired=0,
                                       records=res.records, timing=res.timing)
         etiquetas = [r[0] for r in provenance_rows(viejo, "9.9")]
-        self.assertEqual(etiquetas[-1], "proc_asistencia_detector")
+        self.assertEqual(etiquetas[-2:], ["proc_asistencia_detector", "proc_tecolote_corrige"])
         self.assertEqual(dict_rows(provenance_rows(viejo, "9.9"))["proc_asistencia_detector"], "no registrada")
         self.assertEqual(sum(1 for e in etiquetas if e.startswith(("proc_sujeto", "proc_detector"))), 0)
         sin_nada = types.SimpleNamespace(settings={}, frames_reacquired=0, records=None, timing=res.timing)

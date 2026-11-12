@@ -311,7 +311,7 @@ class ElegirSujetoTests(Base):
         self.assertEqual(self.llamadas_manual, 0)
         self.assertEqual((info["metodo"], info["motivo"], info["modelo"], info["umbral"], info["margen_roi_px"]), ("detector", "propuesta aceptada", "raton.onnx", 0.5, 0))
         self.assertGreater(info["confianza"], 0.9)
-        self.assertIn("El detector propone al sujeto con confianza 0.98.", texto)
+        self.assertIn("Tecolote propone al sujeto con confianza 0.98.", texto)
         self.assertEqual(self.confirmaciones[0][0], (60, 100, 3))  # se confirma sobre el recorte del ROI (100 x 60)
         self.assertEqual(self.confirmaciones[0][1], bbox)
 
@@ -340,7 +340,7 @@ class ElegirSujetoTests(Base):
             raise D.DetectorError("No se pudo abrir el modelo raton.onnx: dañado")
         bbox, info, texto = self.elegir(fabrica=falla)
         self.assertEqual((bbox, self.llamadas_manual), (self.MANUAL_BOX, 1))
-        self.assertIn("Detector no disponible (No se pudo abrir el modelo raton.onnx: dañado). Selecciona el sujeto a mano.", texto)
+        self.assertIn("Tecolote no está disponible (No se pudo abrir el modelo raton.onnx: dañado). Selecciona el sujeto a mano.", texto)
         self.assertIn("detector no disponible", info["motivo"])
         self.assertEqual(info["modelo"], "raton.onnx")
 
@@ -386,17 +386,21 @@ class ElegirSujetoTests(Base):
         self.assertEqual(rec["sujeto"]["metodo"], "detector")  # es una copia
         self.assertEqual(S.assistance_record(None, {"metodo": "manual"})["modo"], "ninguna")
         self.assertEqual(S.assistance_record("", {})["modo"], "ninguna")
+        self.assertEqual(S.assistance_record(self.modelo, {}, corrige=True)["modo"], "proponer_y_corregir")
+        self.assertEqual(S.assistance_record(None, {}, corrige=True)["modo"], "ninguna")  # sin modelo no hay Tecolote que corrija
 
     def test_descripcion_en_una_linea(self):
         d = S.describe_assistance
         acep = S.assistance_record("m.onnx", {"metodo": "detector", "motivo": "propuesta aceptada", "modelo": "rfdetr-small.onnx", "confianza": 0.861})
-        self.assertEqual(d(acep, "fondo"), "Modo: fondo · asistencia del detector: proponer sujeto · sujeto propuesto por el detector y aceptado · modelo rfdetr-small.onnx, confianza 0.86")
+        self.assertEqual(d(acep, "fondo"), "Modo: fondo · Tecolote: proponer sujeto · sujeto propuesto por Tecolote y aceptado · modelo rfdetr-small.onnx, confianza 0.86")
         man = S.assistance_record("m.onnx", {"metodo": "manual", "motivo": "el detector no encontró al sujeto", "modelo": "rfdetr-small.onnx", "confianza": None})
-        self.assertEqual(d(man), "asistencia del detector: proponer sujeto · sujeto marcado a mano (el detector no encontró al sujeto) · modelo rfdetr-small.onnx")
-        self.assertEqual(d(S.assistance_record(None, {"metodo": "manual"}), "silueta"), "Modo: silueta · asistencia del detector: ninguna (sujeto marcado a mano)")
-        self.assertEqual(d(None), "asistencia del detector: ninguna (sujeto marcado a mano)")
+        self.assertEqual(d(man), "Tecolote: proponer sujeto · sujeto marcado a mano (el detector no encontró al sujeto) · modelo rfdetr-small.onnx")
+        self.assertEqual(d(S.assistance_record(None, {"metodo": "manual"}), "silueta"), "Modo: silueta · Tecolote: apagado (sujeto marcado a mano)")
+        self.assertEqual(d(None), "Tecolote: apagado (sujeto marcado a mano)")
         canc = S.assistance_record("m.onnx", {"metodo": "cancelado", "motivo": "cancelado al confirmar la propuesta", "modelo": "x.onnx"})
         self.assertIn("· cancelado (cancelado al confirmar la propuesta) · modelo x.onnx", d(canc))
+        corr = S.assistance_record("m.onnx", {"metodo": "detector", "modelo": "rfdetr-small.onnx", "confianza": 0.9}, corrige=True)
+        self.assertEqual(d(corr, "fondo"), "Modo: fondo · Tecolote: proponer y corregir · sujeto propuesto por Tecolote y aceptado · modelo rfdetr-small.onnx, confianza 0.90")
 
     def test_la_constancia_se_puede_guardar_como_json(self):
         import json

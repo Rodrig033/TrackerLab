@@ -3,6 +3,14 @@ import sys
 import platform
 import subprocess
 import tkinter as tk
+from detection.tecolote import (
+    CORREGIR as TECOLOTE_CORREGIR,
+    DEFAULT_MODE as TECOLOTE_DEFAULT_MODE,
+    DESCRIPTIONS as TECOLOTE_DESCRIPTIONS,
+    LABELS as TECOLOTE_LABELS,
+    MODES as TECOLOTE_MODES,
+    parse_every as tecolote_parse_every
+)
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
@@ -372,6 +380,14 @@ class TrackerLauncher:
             value=""
         )
 
+        self.tecolote_mode = tk.StringVar(
+            value=TECOLOTE_DEFAULT_MODE
+        )
+
+        self.tecolote_every_s = tk.StringVar(
+            value="0.5"
+        )
+
         self.video_info = tk.StringVar(
             value="No se ha seleccionado ningún video."
         )
@@ -672,6 +688,10 @@ class TrackerLauncher:
             container
         )
 
+        self._build_tecolote_section(
+            container
+        )
+
         self._build_options_section(
             container
         )
@@ -936,6 +956,85 @@ class TrackerLauncher:
             padx=24
         )
 
+    def _build_tecolote_section(self, parent):
+        box = ttk.LabelFrame(
+            parent,
+            text="Tecolote (detector neuronal)",
+            padding=16,
+            style="Section.TLabelframe"
+        )
+
+        box.pack(
+            fill="x",
+            pady=(0, 14)
+        )
+
+        for mode in TECOLOTE_MODES:
+            ttk.Radiobutton(
+                box,
+                text=TECOLOTE_LABELS[mode],
+                variable=self.tecolote_mode,
+                value=mode,
+                command=self._update_tecolote_state
+            ).pack(
+                anchor="w"
+            )
+
+            ttk.Label(
+                box,
+                text=TECOLOTE_DESCRIPTIONS[mode],
+                wraplength=560
+            ).pack(
+                anchor="w",
+                padx=24,
+                pady=(0, 8)
+            )
+
+        row = ttk.Frame(
+            box
+        )
+
+        row.pack(
+            anchor="w",
+            padx=24
+        )
+
+        ttk.Label(
+            row,
+            text="Verificar cada"
+        ).pack(
+            side="left"
+        )
+
+        self.tecolote_every_entry = ttk.Entry(
+            row,
+            textvariable=self.tecolote_every_s,
+            width=6
+        )
+
+        self.tecolote_every_entry.pack(
+            side="left",
+            padx=6
+        )
+
+        ttk.Label(
+            row,
+            text="segundos (menos = más preciso, pero más lento)"
+        ).pack(
+            side="left"
+        )
+
+        self._update_tecolote_state()
+
+    def _update_tecolote_state(self):
+        if self.tecolote_mode.get() == TECOLOTE_CORREGIR:
+            self.tecolote_every_entry.configure(
+                state="normal"
+            )
+        else:
+            self.tecolote_every_entry.configure(
+                state="disabled"
+            )
 
     def _build_options_section(self, parent):
         box = ttk.LabelFrame(
@@ -1374,7 +1473,25 @@ class TrackerLauncher:
 
                 return
 
+        try: 
+            tecolote_every = tecolote_parse_every(
+                self.tecolote_every_s.get()
+            )
+        except ValueError as exc:
+            messagebox.showerror(
+                "Frecuencia de Tecolote invalida",
+                str(exc),
+                parent=self.root
+            )
+            return
+
         self.result = {
+
+            "tecolote_mode":
+                self.tecolote_mode.get(),
+            "tecolote_every_s":
+                tecolote_every,
+                            
             "video_path":
                 video,
 

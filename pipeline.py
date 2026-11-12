@@ -18,6 +18,7 @@ from tracking.background_tracker import BackgroundTracker, compute_background
 from tracking.color_tracker import ColorTracker, default_start
 from tracking.reacquisition import Reacquirer
 from tracking.silhouette_tracker import SilhouetteTracker
+from detection.corrector import SESGO, classify
 from video.frame_selection import FrameRange, TrackingTiming, frame_time_s, read_background_frames
 from video.reader import VideoReader
 
@@ -71,6 +72,11 @@ class TrackingJob:
     reacquire_every:      cada cuántos frames se repite la búsqueda mientras siga sin encontrarse.
     assistance:           constancia de la asistencia del detector (detection.subject.assistance_record), o None.
                           Solo se registra: no cambia el seguimiento.
+    corrector:            Tecolote como corrector (detection.corrector.TecoloteCorrector), o None (comportamiento de siempre).
+    correct_every_s:      cada cuántos segundos de video mide Tecolote (además, en el primer frame en que se pierde el sujeto).
+    correct_max_offset_ratio: hasta qué distancia (en lados mayores de la caja de Tecolote) el seguimiento cuenta como «sobre
+                          el ratón pero corrido» y se corrige el desvío; más lejos, se reubica (rescate).
+    correct_offset_max_age_s: un desvío medido se sigue aplicando hasta la próxima medición, pero no más de esto sin confirmar.
     """
 
     reader: VideoReader
@@ -92,6 +98,10 @@ class TrackingJob:
     reacquire_after_frames: int = 3
     reacquire_every: int = 5
     assistance: Optional[Dict[str, Any]] = None
+    corrector: Optional[Any] = None
+    correct_every_s: float = 0.5
+    correct_max_offset_ratio: float = 1.0
+    correct_offset_max_age_s: float = 2.0
 
 
 # ----------------------------------------------------------------------
@@ -313,6 +323,24 @@ def run_tracking(
         "asistencia_detector": job.assistance,
     }
 
+    corrector = job.corrector
+    check_every = max(1, round(job.correct_every_s / timing.dt)) if corrector is not None else None
+    max_age = max(1, round(job.correct_offset_max_age_s / timing.dt)) if corrector is not None else None
+    offset: Optional[Tuple[float, float]] = None  # desvío vigente del seguimiento respecto a Tecolote
+    offset_age = 0
+    since_check = check_every or 0  # así se mide en el primer frame
+    tracker_gap = 0  # frames seguidos en que el PROPIO seguimiento no tiene posición (antes de cualquier corrección)
+    measures = corrections = rescues = 0
+    if corrector is not None:
+        settings.update(
+            tecolote_corrector=corrector.describe() if hasattr(corrector, "describe") else type(corrector).__name__,
+            tecolote_cada_frames=check_every,
+            tecolote_desvio_max_relativo=job.correct_max_offset_ratio,
+            tecolote_desvio_caduca_frames=max_age,
+        )
+    else:
+        settings["tecolote_corrector"] = None
+
     warnings: List[str] = []
     records: List[FrameRecord] = []
     processed = found_count = tracker_found = rejected = recovered = reacquired = 0
@@ -414,6 +442,51 @@ def run_tracking(
                     det = cand
                     say(f"Sujeto reencontrado en el frame {frame_idx}")
 
+        # Tecolote: medir cada tanto (y en el primer frame perdido) y corregir el desvío o reubicar al sujeto
+        if corrector is not None:
+            since_check += 1
+            used = False  # True si en este frame una medición de Tecolote corrigió o reubicó
+            tracker_gap = tracker_gap + 1 if validated is None else 0
+            # Se mide según el calendario, y en el PRIMER frame en que el seguimiento pierde al sujeto (no en cada uno:
+            # cada medición cuesta ~250 ms; si el seguimiento sigue sin verlo, se espera a la siguiente del calendario).
+            if since_check >= check_every or tracker_gap == 1:
+                since_check = 0
+                try:
+                    meas = corrector.measure(frame, job.roi_box)
+                except Exception as exc:  # un corrector que falla no debe tirar abajo una corrida larga
+                    warnings.append(f"Tecolote falló en el frame {frame_idx} ({type(exc).__name__}: {exc}) y dejó de corregir el resto de la corrida.")
+                    corrector, meas, offset = None, None, None
+                if meas is not None:
+                    measures += 1
+                    used = True
+                    kind, delta = classify(validated, meas, job.correct_max_offset_ratio)
+                    bx, by, bw, bh = meas.bbox
+                    det = dataclasses.replace(det, center=(meas.center[0] - x0, meas.center[1] - y0), bbox=(bx - x0, by - y0, bw, bh)) \
+                        if det.found else Detection(center=(meas.center[0] - x0, meas.center[1] - y0), bbox=(bx - x0, by - y0, bw, bh))
+                    if kind == SESGO:
+                        offset, offset_age = delta, 0
+                        validated = meas.center
+                        corrections += 1
+                    else:
+                        tracker.reset((meas.center[0] - x0, meas.center[1] - y0), (bx - x0, by - y0, bw, bh))
+                        validated = rejector.accept(meas.center) if rejector is not None else meas.center
+                        status = STATUS_RECOVERED
+                        if ema is not None:
+                            ema.reset()
+                        offset, offset_age = None, 0
+                        streak, last_rejected = 0, None
+                        rescues += 1
+                        say(f"Tecolote reubicó al sujeto en el frame {frame_idx}")
+            if not used and offset is not None:
+                offset_age += 1
+                if offset_age > max_age:
+                    offset = None  # sin confirmación hace demasiado: se deja de aplicar
+                elif validated is not None:
+                    validated = (validated[0] + offset[0], validated[1] + offset[1])
+                    if det.found:
+                        c, b = det.center, det.bbox
+                        det = dataclasses.replace(det, center=(c[0] + offset[0], c[1] + offset[1]), bbox=(b[0] + offset[0], b[1] + offset[1], b[2], b[3]))
+
         cx_abs = cy_abs = cy_abs_inv = None
         x_rel_px = y_rel_px = x_rel_cm = y_rel_cm = None
         point: Optional[Tuple[float, float]] = None
@@ -474,6 +547,10 @@ def run_tracking(
             _recapture_background(job, frame_idx, warnings)
         else:
             raise TypeError(f"Orden desconocida: {cmd!r}")
+
+    if job.corrector is not None:
+        settings.update(tecolote_mediciones=measures, tecolote_correcciones=corrections, tecolote_reubicaciones=rescues)
+        say(f"Tecolote: {measures} mediciones con confianza suficiente; {corrections} correcciones de desvío y {rescues} reubicaciones.")
 
     if tracker_found >= 10 and rejected / tracker_found >= 0.2:
         warnings.append(
