@@ -149,6 +149,7 @@ COLLECT_DATASET = False
 
 # Interruptor
 SAVE_RUN_INPUTS = True
+SHOW_TRAIL = False
 
 # --- Detector para proponer al sujeto (None = selección manual de siempre) ---
 DETECTOR_MODEL = "/Users/farid/TrackerLab_Resultados/modelos/rfdetr_small_20261110_214151/rfdetr-small.onnx"
@@ -2610,6 +2611,8 @@ def main():
 
         )
 
+        view_state = {"trail": SHOW_TRAIL}
+
         def on_record(
 
             record
@@ -2662,19 +2665,8 @@ def main():
 
             )
 
-            display = trajectory.draw(
-
-                display,
-
-                offset=(
-
-                    x0,
-
-                    y0
-
-                )
-
-            )
+            if view_state["trail"]:
+                display = trajectory.draw(display, offset=(x0, y0))
 
             det = (
 
@@ -2889,6 +2881,9 @@ def main():
             ):
 
                 return Quit()
+
+            if key == ord("t"):
+                view_state["trail"] = not view_state["trail"] 
 
             return None
 
