@@ -268,11 +268,30 @@ class CorreccionDelSesgoTests(unittest.TestCase):
     def test_la_caja_del_evento_se_corrige_tambien(self):
         reloj = Reloj()
         _, ev, _ = correr(Juguete(reloj, sesgo=(20.0, 0.0)), K.TecoloteCorrector(DetectorJuguete(reloj)), correct_every_s=0.2, guardar_eventos=True)
-        v = VERDAD[45]  # frame de medición: la caja es la de Tecolote
-        self.assertEqual(ev[45].bbox, (v[0] - 13.0 - X0, v[1] - 13.0 - Y0, 26.0, 26.0))
+        v = VERDAD[45]  # frame de medición: la caja es la de Tecolote, en enteros
+        self.assertEqual(ev[45].bbox, tuple(int(round(t)) for t in (v[0] - 13.0 - X0, v[1] - 13.0 - Y0, 26.0, 26.0)))
         v = VERDAD[47]  # entre mediciones: la del seguimiento, corrida por el desvío
         self.assertAlmostEqual(ev[47].center[0], v[0] - X0)
-        self.assertAlmostEqual(ev[47].bbox[0], int(v[0] - X0 + 20.0 - 13) - 20.0)
+        self.assertEqual(ev[47].bbox[0], int(round(int(v[0] - X0 + 20.0 - 13) - 20.0)))
+
+    def test_las_cajas_de_los_eventos_se_pueden_dibujar_con_opencv(self):
+        """La vista en vivo dibuja det.bbox con cv2.rectangle, que exige enteros. Con Tecolote corrigiendo y rescatando, también."""
+        import cv2
+        for tr_fab, cada in ((lambda r: Juguete(r, sesgo=(12.3, -4.7)), 0.2), (lambda r: Juguete(r, pegado=(240.0, 170.0)), 0.4)):
+            reloj = Reloj()
+            _, ev, _ = correr(tr_fab(reloj), K.TecoloteCorrector(DetectorJuguete(reloj)), correct_every_s=cada, guardar_eventos=True)
+            lienzo = np.zeros((ROI[3], ROI[2], 3), np.uint8)
+            for f, d in ev.items():
+                if d.found:
+                    self.assertTrue(all(type(v) is int for v in d.bbox), msg=f"frame {f}: {d.bbox}")
+                    bx, by, bw, bh = d.bbox
+                    cv2.rectangle(lienzo, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)  # igual que main.py: no debe fallar
+
+    def test_redondeo_de_cajas(self):
+        from pipeline import _int_box
+        self.assertEqual(_int_box((10.4, 20.6, 30.5, 0.2)), (10, 21, 30, 1))  # el tamaño nunca queda en cero
+        self.assertEqual(_int_box((-0.6, 5.0, 7.0, 8.9)), (-1, 5, 7, 9))
+        self.assertTrue(all(type(v) is int for v in _int_box((1.0, 2.0, 3.0, 4.0))))
 
 
 class RescateTests(unittest.TestCase):

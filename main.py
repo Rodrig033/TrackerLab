@@ -2278,10 +2278,12 @@ def main():
 
         ].copy()
 
+        tecolote = prepare_tecolote(options.get("tecolote_mode", PROPONER), DETECTOR_MODEL, options.get("tecolote_every_s"))
+
         bbox, subject_info = choose_subject(
             sample_frame,
             roi_box,
-            model_path=DETECTOR_MODEL,
+            model_path=tecolote.propose_model,
             manual_select=lambda: select_object_bbox(sample_roi, "SELECCIONA EL SUJETO")
         )
 
@@ -2902,7 +2904,9 @@ def main():
                 bbox
             ),
                 reacquirer=(SilhouetteReacquirer(tracker) if SILHOUETTE_REACQUIRE and tracking_mode == "2" else None),
-                assistance=assistance_record(DETECTOR_MODEL, subject_info)
+                assistance=assistance_record(tecolote.propose_model, subject_info, corrige=tecolote.corrects),
+                corrector=tecolote.corrector,
+                correct_every_s=tecolote.every_s
             )
 
         print(describe_assistance(job.assistance, {"1": "fondo", "2": "silueta", "3": "color"}.get(tracking_mode, tracking_mode)))

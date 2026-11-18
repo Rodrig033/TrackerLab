@@ -270,6 +270,12 @@ def _recapture_background(job: TrackingJob, frame_idx: int, warnings: List[str])
 # ----------------------------------------------------------------------
 # Bucle principal
 # ----------------------------------------------------------------------
+def _int_box(b: Sequence[float]) -> Tuple[int, int, int, int]:
+    """Caja (x, y, ancho, alto) en píxeles enteros, como las del seguimiento clásico (OpenCV no dibuja con decimales)."""
+    x, y, w, h = (int(round(float(v))) for v in b)
+    return x, y, max(1, w), max(1, h)
+
+
 def run_tracking(
     job: TrackingJob,
     on_frame: Optional[Callable[[FrameEvent], Optional[Command]]] = None,
@@ -461,14 +467,15 @@ def run_tracking(
                     used = True
                     kind, delta = classify(validated, meas, job.correct_max_offset_ratio)
                     bx, by, bw, bh = meas.bbox
-                    det = dataclasses.replace(det, center=(meas.center[0] - x0, meas.center[1] - y0), bbox=(bx - x0, by - y0, bw, bh)) \
-                        if det.found else Detection(center=(meas.center[0] - x0, meas.center[1] - y0), bbox=(bx - x0, by - y0, bw, bh))
+                    caja_roi = _int_box((bx - x0, by - y0, bw, bh))  # enteros, como las del seguimiento: la vista en vivo las dibuja con OpenCV
+                    det = dataclasses.replace(det, center=(meas.center[0] - x0, meas.center[1] - y0), bbox=caja_roi) \
+                        if det.found else Detection(center=(meas.center[0] - x0, meas.center[1] - y0), bbox=caja_roi)
                     if kind == SESGO:
                         offset, offset_age = delta, 0
                         validated = meas.center
                         corrections += 1
                     else:
-                        tracker.reset((meas.center[0] - x0, meas.center[1] - y0), (bx - x0, by - y0, bw, bh))
+                        tracker.reset((meas.center[0] - x0, meas.center[1] - y0), caja_roi)
                         validated = rejector.accept(meas.center) if rejector is not None else meas.center
                         status = STATUS_RECOVERED
                         if ema is not None:
@@ -485,7 +492,7 @@ def run_tracking(
                     validated = (validated[0] + offset[0], validated[1] + offset[1])
                     if det.found:
                         c, b = det.center, det.bbox
-                        det = dataclasses.replace(det, center=(c[0] + offset[0], c[1] + offset[1]), bbox=(b[0] + offset[0], b[1] + offset[1], b[2], b[3]))
+                        det = dataclasses.replace(det, center=(c[0] + offset[0], c[1] + offset[1]), bbox=_int_box((b[0] + offset[0], b[1] + offset[1], b[2], b[3])))
 
         cx_abs = cy_abs = cy_abs_inv = None
         x_rel_px = y_rel_px = x_rel_cm = y_rel_cm = None
